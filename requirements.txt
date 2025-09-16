@@ -19,8 +19,11 @@ numpy
 streamlit
 matplotlib
 >>>>>>> 2b4e116893d4cf19d91047e505707b5d695021cc
+<<<<<<< Updated upstream
 
 pillow
 numpy
 streamlit
 matplotlib
+=======
+>>>>>>> Stashed changes
