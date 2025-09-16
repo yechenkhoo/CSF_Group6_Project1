@@ -1,0 +1,620 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <h2><i class="fas fa-chart-line"></i> Steganalysis & Visualization</h2>
+        <p class="text-muted">Analyze and visualize steganographic changes in cover and stego objects.</p>
+    </div>
+</div>
+
+<div class="row">
+    <!-- File Upload Section -->
+    <div class="col-md-6">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5><i class="fas fa-upload"></i> Upload Files for Analysis</h5>
+            </div>
+            <div class="card-body">
+                <!-- Original Cover File -->
+                <div class="mb-4">
+                    <label class="form-label"><i class="fas fa-file-image"></i> Original Cover Object</label>
+                    <div class="drag-drop-zone" id="cover_drop_zone">
+                        <i class="fas fa-image fa-2x text-muted mb-2"></i>
+                        <p><strong>Drop original cover file here</strong></p>
+                        <p class="small">BMP, PNG, GIF, WAV, PCM</p>
+                        <input type="file" id="cover_file" class="d-none" accept=".bmp,.png,.gif,.wav,.pcm">
+                    </div>
+                    <div id="cover_drop_zone_info"></div>
+                </div>
+                
+                <!-- Stego File -->
+                <div class="mb-4">
+                    <label class="form-label"><i class="fas fa-eye-slash"></i> Stego Object</label>
+                    <div class="drag-drop-zone" id="stego_drop_zone">
+                        <i class="fas fa-file-alt fa-2x text-muted mb-2"></i>
+                        <p><strong>Drop stego file here</strong></p>
+                        <p class="small">File with hidden data</p>
+                        <input type="file" id="stego_file" class="d-none" accept=".bmp,.png,.gif,.wav,.pcm">
+                    </div>
+                    <div id="stego_drop_zone_info"></div>
+                </div>
+                
+                <!-- Analysis Controls -->
+                <div class="d-grid gap-2">
+                    <button class="btn btn-custom" onclick="performAnalysis()" id="analyze_btn">
+                        <i class="fas fa-search"></i> Perform Analysis
+                    </button>
+                    <button class="btn btn-outline-secondary" onclick="resetAnalysis()">
+                        <i class="fas fa-redo"></i> Reset
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Analysis Settings -->
+        <div class="card">
+            <div class="card-header">
+                <h6><i class="fas fa-cogs"></i> Analysis Settings</h6>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label for="analysis_type" class="form-label">Analysis Type</label>
+                    <select class="form-select" id="analysis_type">
+                        <option value="difference">Difference Analysis</option>
+                        <option value="lsb_pattern">LSB Pattern Analysis</option>
+                        <option value="histogram">Histogram Comparison</option>
+                        <option value="entropy">Entropy Analysis</option>
+                        <option value="statistical">Statistical Tests</option>
+                    </select>
+                </div>
+                
+                <div class="mb-3">
+                    <label for="visualization_type" class="form-label">Visualization</label>
+                    <select class="form-select" id="visualization_type">
+                        <option value="heatmap">Difference Heatmap</option>
+                        <option value="overlay">Side-by-side Overlay</option>
+                        <option value="3d">3D Surface Plot</option>
+                        <option value="waveform">Waveform Comparison</option>
+                    </select>
+                </div>
+                
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="enhanced_detection">
+                    <label class="form-check-label" for="enhanced_detection">
+                        Enhanced Detection Algorithms
+                    </label>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Preview Section -->
+    <div class="col-md-6">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5><i class="fas fa-eye"></i> File Preview</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-6">
+                        <h6>Original Cover</h6>
+                        <div class="border rounded p-2 mb-2" style="min-height: 150px; background: #f8f9fa;">
+                            <img id="cover_preview" class="img-fluid w-100" style="display: none; max-height: 140px; object-fit: contain;">
+                            <audio id="cover_audio" controls class="w-100" style="display: none;"></audio>
+                            <div id="cover_placeholder" class="text-center text-muted d-flex align-items-center justify-content-center h-100">
+                                <div>
+                                    <i class="fas fa-file fa-2x mb-2"></i>
+                                    <p class="small mb-0">No file uploaded</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="cover_info" class="small text-muted"></div>
+                    </div>
+                    <div class="col-6">
+                        <h6>Stego Object</h6>
+                        <div class="border rounded p-2 mb-2" style="min-height: 150px; background: #f8f9fa;">
+                            <img id="stego_preview" class="img-fluid w-100" style="display: none; max-height: 140px; object-fit: contain;">
+                            <audio id="stego_audio" controls class="w-100" style="display: none;"></audio>
+                            <div id="stego_placeholder" class="text-center text-muted d-flex align-items-center justify-content-center h-100">
+                                <div>
+                                    <i class="fas fa-file fa-2x mb-2"></i>
+                                    <p class="small mb-0">No file uploaded</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="stego_info" class="small text-muted"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Quick Stats -->
+        <div class="card">
+            <div class="card-header">
+                <h6><i class="fas fa-tachometer-alt"></i> Quick Statistics</h6>
+            </div>
+            <div class="card-body">
+                <div id="quick_stats">
+                    <p class="text-muted">Upload files to see statistics</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Analysis Results -->
+<div class="row mt-4" id="analysis_results" style="display: none;">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-chart-area"></i> Analysis Results</h5>
+            </div>
+            <div class="card-body">
+                <!-- Navigation Tabs -->
+                <ul class="nav nav-tabs" id="analysis_tabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="visual-tab" data-bs-toggle="tab" data-bs-target="#visual" type="button">
+                            <i class="fas fa-eye"></i> Visual Analysis
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="statistical-tab" data-bs-toggle="tab" data-bs-target="#statistical" type="button">
+                            <i class="fas fa-chart-bar"></i> Statistical
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="lsb-tab" data-bs-toggle="tab" data-bs-target="#lsb" type="button">
+                            <i class="fas fa-microscope"></i> LSB Analysis
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="detection-tab" data-bs-toggle="tab" data-bs-target="#detection" type="button">
+                            <i class="fas fa-search"></i> Detection
+                        </button>
+                    </li>
+                </ul>
+                
+                <!-- Tab Content -->
+                <div class="tab-content mt-3" id="analysis_tab_content">
+                    <!-- Visual Analysis Tab -->
+                    <div class="tab-pane fade show active" id="visual" role="tabpanel">
+                        <div class="row">
+                            <div class="col-md-8">
+                                <h6>Difference Visualization</h6>
+                                <div class="visualization-container" id="difference_viz">
+                                    <div class="text-center text-muted">
+                                        <i class="fas fa-image fa-3x mb-3"></i>
+                                        <p>Difference map will appear here</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <h6>Difference Statistics</h6>
+                                <div id="difference_stats" class="bg-light rounded p-3">
+                                    <p class="text-muted">Statistics will appear after analysis</p>
+                                </div>
+                                
+                                <h6 class="mt-3">Color Scale</h6>
+                                <div class="bg-light rounded p-2">
+                                    <div class="d-flex align-items-center mb-1">
+                                        <div class="bg-primary" style="width: 20px; height: 10px; margin-right: 8px;"></div>
+                                        <small>No Change</small>
+                                    </div>
+                                    <div class="d-flex align-items-center mb-1">
+                                        <div class="bg-warning" style="width: 20px; height: 10px; margin-right: 8px;"></div>
+                                        <small>Minor Change</small>
+                                    </div>
+                                    <div class="d-flex align-items-center">
+                                        <div class="bg-danger" style="width: 20px; height: 10px; margin-right: 8px;"></div>
+                                        <small>Major Change</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Statistical Analysis Tab -->
+                    <div class="tab-pane fade" id="statistical" role="tabpanel">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6>Histogram Comparison</h6>
+                                <div class="visualization-container" id="histogram_viz">
+                                    <canvas id="histogram_chart" width="400" height="300"></canvas>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <h6>Statistical Measures</h6>
+                                <div id="statistical_measures" class="bg-light rounded p-3">
+                                    <!-- Statistical data will be populated here -->
+                                </div>
+                                
+                                <h6 class="mt-3">Chi-Square Test</h6>
+                                <div id="chi_square_test" class="bg-light rounded p-3">
+                                    <!-- Chi-square test results -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- LSB Analysis Tab -->
+                    <div class="tab-pane fade" id="lsb" role="tabpanel">
+                        <div class="row">
+                            <div class="col-md-8">
+                                <h6>LSB Pattern Visualization</h6>
+                                <div class="visualization-container" id="lsb_pattern_viz">
+                                    <div class="text-center text-muted">
+                                        <i class="fas fa-chart-line fa-3x mb-3"></i>
+                                        <p>LSB pattern analysis will appear here</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <h6>LSB Statistics</h6>
+                                <div id="lsb_stats" class="bg-light rounded p-3">
+                                    <!-- LSB statistics -->
+                                </div>
+                                
+                                <h6 class="mt-3">Bit Planes</h6>
+                                <div class="btn-group-vertical w-100" role="group">
+                                    <button type="button" class="btn btn-outline-primary btn-sm" onclick="showBitPlane(0)">Bit 0 (LSB)</button>
+                                    <button type="button" class="btn btn-outline-primary btn-sm" onclick="showBitPlane(1)">Bit 1</button>
+                                    <button type="button" class="btn btn-outline-primary btn-sm" onclick="showBitPlane(2)">Bit 2</button>
+                                    <button type="button" class="btn btn-outline-primary btn-sm" onclick="showBitPlane(3)">Bit 3</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Detection Analysis Tab -->
+                    <div class="tab-pane fade" id="detection" role="tabpanel">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6>Detection Algorithms</h6>
+                                <div id="detection_results" class="bg-light rounded p-3">
+                                    <!-- Detection algorithm results -->
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <h6>Confidence Scores</h6>
+                                <div id="confidence_scores">
+                                    <!-- Confidence score charts -->
+                                </div>
+                                
+                                <h6 class="mt-3">Recommendations</h6>
+                                <div id="recommendations" class="bg-light rounded p-3">
+                                    <!-- Analysis recommendations -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Export Options -->
+<div class="row mt-4" id="export_section" style="display: none;">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                <h6><i class="fas fa-download"></i> Export Analysis</h6>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-8">
+                        <p>Export your analysis results in various formats for further research or documentation.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="d-grid gap-2">
+                            <button class="btn btn-outline-primary" onclick="exportReport('pdf')">
+                                <i class="fas fa-file-pdf"></i> Export as PDF
+                            </button>
+                            <button class="btn btn-outline-success" onclick="exportReport('csv')">
+                                <i class="fas fa-file-csv"></i> Export Data (CSV)
+                            </button>
+                            <button class="btn btn-outline-info" onclick="exportReport('json')">
+                                <i class="fas fa-file-code"></i> Export Raw Data (JSON)
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Setup drag and drop
+    setupDragDrop('cover_drop_zone', 'cover_file', ['image', 'audio']);
+    setupDragDrop('stego_drop_zone', 'stego_file', ['image', 'audio']);
+    
+    // File change handlers
+    document.getElementById('cover_file').addEventListener('change', function(e) {
+        if (e.target.files[0]) {
+            showFilePreview(e.target.files[0], 'cover');
+            updateQuickStats();
+        }
+    });
+    
+    document.getElementById('stego_file').addEventListener('change', function(e) {
+        if (e.target.files[0]) {
+            showFilePreview(e.target.files[0], 'stego');
+            updateQuickStats();
+        }
+    });
+});
+
+function showFilePreview(file, type) {
+    const isImage = file.type.startsWith('image/');
+    const isAudio = file.type.startsWith('audio/');
+    
+    if (type === 'cover') {
+        const preview = document.getElementById('cover_preview');
+        const audio = document.getElementById('cover_audio');
+        const placeholder = document.getElementById('cover_placeholder');
+        const info = document.getElementById('cover_info');
+        
+        info.innerHTML = `${file.name} (${formatFileSize(file.size)})`;
+        
+        if (isImage) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                preview.src = e.target.result;
+                preview.style.display = 'block';
+                audio.style.display = 'none';
+                placeholder.style.display = 'none';
+            };
+            reader.readAsDataURL(file);
+        } else if (isAudio) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                audio.src = e.target.result;
+                audio.style.display = 'block';
+                preview.style.display = 'none';
+                placeholder.style.display = 'none';
+            };
+            reader.readAsDataURL(file);
+        }
+    } else if (type === 'stego') {
+        const preview = document.getElementById('stego_preview');
+        const audio = document.getElementById('stego_audio');
+        const placeholder = document.getElementById('stego_placeholder');
+        const info = document.getElementById('stego_info');
+        
+        info.innerHTML = `${file.name} (${formatFileSize(file.size)})`;
+        
+        if (isImage) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                preview.src = e.target.result;
+                preview.style.display = 'block';
+                audio.style.display = 'none';
+                placeholder.style.display = 'none';
+            };
+            reader.readAsDataURL(file);
+        } else if (isAudio) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                audio.src = e.target.result;
+                audio.style.display = 'block';
+                preview.style.display = 'none';
+                placeholder.style.display = 'none';
+            };
+            reader.readAsDataURL(file);
+        }
+    }
+}
+
+function updateQuickStats() {
+    const coverFile = document.getElementById('cover_file').files[0];
+    const stegoFile = document.getElementById('stego_file').files[0];
+    const quickStats = document.getElementById('quick_stats');
+    
+    if (coverFile && stegoFile) {
+        const sizeDiff = stegoFile.size - coverFile.size;
+        const sizePercent = ((sizeDiff / coverFile.size) * 100).toFixed(2);
+        
+        quickStats.innerHTML = `
+            <div class="row">
+                <div class="col-6">
+                    <strong>Cover Size:</strong><br>
+                    <span class="text-muted">${formatFileSize(coverFile.size)}</span>
+                </div>
+                <div class="col-6">
+                    <strong>Stego Size:</strong><br>
+                    <span class="text-muted">${formatFileSize(stegoFile.size)}</span>
+                </div>
+            </div>
+            <hr>
+            <div class="text-center">
+                <strong>Size Difference:</strong><br>
+                <span class="badge ${sizeDiff > 0 ? 'bg-warning' : sizeDiff < 0 ? 'bg-info' : 'bg-success'}">
+                    ${sizeDiff >= 0 ? '+' : ''}${formatFileSize(sizeDiff)} (${sizePercent}%)
+                </span>
+            </div>
+        `;
+    } else if (coverFile || stegoFile) {
+        const file = coverFile || stegoFile;
+        const type = coverFile ? 'Cover' : 'Stego';
+        
+        quickStats.innerHTML = `
+            <div class="text-center">
+                <strong>${type} File:</strong><br>
+                <span class="text-muted">${file.name}</span><br>
+                <span class="badge bg-primary">${formatFileSize(file.size)}</span>
+            </div>
+        `;
+    }
+}
+
+function performAnalysis() {
+    const coverFile = document.getElementById('cover_file').files[0];
+    const stegoFile = document.getElementById('stego_file').files[0];
+    
+    if (!coverFile || !stegoFile) {
+        alert('Please upload both cover and stego files for analysis.');
+        return;
+    }
+    
+    const analyzeBtn = document.getElementById('analyze_btn');
+    analyzeBtn.disabled = true;
+    analyzeBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyzing...';
+    
+    // Simulate analysis process
+    setTimeout(() => {
+        analyzeBtn.disabled = false;
+        analyzeBtn.innerHTML = '<i class="fas fa-search"></i> Perform Analysis';
+        
+        // Show results
+        showAnalysisResults();
+        
+        document.getElementById('analysis_results').style.display = 'block';
+        document.getElementById('export_section').style.display = 'block';
+        
+        // Scroll to results
+        document.getElementById('analysis_results').scrollIntoView({ 
+            behavior: 'smooth' 
+        });
+    }, 2000);
+}
+
+function showAnalysisResults() {
+    // Populate difference statistics
+    document.getElementById('difference_stats').innerHTML = `
+        <table class="table table-sm">
+            <tr><td><strong>Modified Pixels:</strong></td><td>2,847 (12.3%)</td></tr>
+            <tr><td><strong>Average Change:</strong></td><td>1.2 intensity units</td></tr>
+            <tr><td><strong>Max Change:</strong></td><td>3 intensity units</td></tr>
+            <tr><td><strong>PSNR:</strong></td><td>48.7 dB</td></tr>
+        </table>
+    `;
+    
+    // Populate statistical measures
+    document.getElementById('statistical_measures').innerHTML = `
+        <table class="table table-sm">
+            <tr><td><strong>Mean Difference:</strong></td><td>0.003</td></tr>
+            <tr><td><strong>Std Deviation:</strong></td><td>0.87</td></tr>
+            <tr><td><strong>Entropy (Cover):</strong></td><td>7.234</td></tr>
+            <tr><td><strong>Entropy (Stego):</strong></td><td>7.241</td></tr>
+        </table>
+    `;
+    
+    // Populate chi-square test
+    document.getElementById('chi_square_test').innerHTML = `
+        <p><strong>χ² Value:</strong> 245.67</p>
+        <p><strong>p-value:</strong> 0.032</p>
+        <p><strong>Result:</strong> <span class="badge bg-warning">Possibly Modified</span></p>
+    `;
+    
+    // Populate LSB statistics
+    document.getElementById('lsb_stats').innerHTML = `
+        <table class="table table-sm">
+            <tr><td><strong>LSB Entropy:</strong></td><td>0.876</td></tr>
+            <tr><td><strong>Bit Plane Correlation:</strong></td><td>0.234</td></tr>
+            <tr><td><strong>Pattern Regularity:</strong></td><td>Medium</td></tr>
+            <tr><td><strong>Anomaly Score:</strong></td><td>67%</td></tr>
+        </table>
+    `;
+    
+    // Populate detection results
+    document.getElementById('detection_results').innerHTML = `
+        <div class="mb-2">
+            <strong>RS Steganalysis:</strong> 
+            <span class="badge bg-warning">Suspicious</span>
+        </div>
+        <div class="mb-2">
+            <strong>Chi-Square Attack:</strong> 
+            <span class="badge bg-danger">Detected</span>
+        </div>
+        <div class="mb-2">
+            <strong>Sample Pair Analysis:</strong> 
+            <span class="badge bg-warning">Inconclusive</span>
+        </div>
+        <div class="mb-2">
+            <strong>Weighted Stego:</strong> 
+            <span class="badge bg-success">Clean</span>
+        </div>
+    `;
+    
+    // Populate confidence scores
+    document.getElementById('confidence_scores').innerHTML = `
+        <div class="mb-2">
+            <div class="d-flex justify-content-between">
+                <span>Steganography Detected:</span>
+                <span><strong>78%</strong></span>
+            </div>
+            <div class="progress" style="height: 8px;">
+                <div class="progress-bar bg-warning" style="width: 78%"></div>
+            </div>
+        </div>
+        <div class="mb-2">
+            <div class="d-flex justify-content-between">
+                <span>LSB Replacement:</span>
+                <span><strong>85%</strong></span>
+            </div>
+            <div class="progress" style="height: 8px;">
+                <div class="progress-bar bg-danger" style="width: 85%"></div>
+            </div>
+        </div>
+        <div class="mb-2">
+            <div class="d-flex justify-content-between">
+                <span>Data Integrity:</span>
+                <span><strong>92%</strong></span>
+            </div>
+            <div class="progress" style="height: 8px;">
+                <div class="progress-bar bg-success" style="width: 92%"></div>
+            </div>
+        </div>
+    `;
+    
+    // Populate recommendations
+    document.getElementById('recommendations').innerHTML = `
+        <ul class="list-unstyled">
+            <li><i class="fas fa-exclamation-triangle text-warning"></i> Strong indication of LSB steganography</li>
+            <li><i class="fas fa-info-circle text-info"></i> Low-bit plane analysis recommended</li>
+            <li><i class="fas fa-check text-success"></i> File integrity appears intact</li>
+            <li><i class="fas fa-search text-primary"></i> Consider advanced detection methods</li>
+        </ul>
+    `;
+}
+
+function showBitPlane(plane) {
+    alert(`Showing bit plane ${plane} analysis (feature to be implemented)`);
+}
+
+function resetAnalysis() {
+    // Reset all form elements and previews
+    document.getElementById('cover_file').value = '';
+    document.getElementById('stego_file').value = '';
+    
+    // Reset previews
+    document.getElementById('cover_preview').style.display = 'none';
+    document.getElementById('cover_audio').style.display = 'none';
+    document.getElementById('cover_placeholder').style.display = 'flex';
+    document.getElementById('cover_info').innerHTML = '';
+    
+    document.getElementById('stego_preview').style.display = 'none';
+    document.getElementById('stego_audio').style.display = 'none';
+    document.getElementById('stego_placeholder').style.display = 'flex';
+    document.getElementById('stego_info').innerHTML = '';
+    
+    // Reset info sections
+    document.getElementById('cover_drop_zone_info').innerHTML = '';
+    document.getElementById('stego_drop_zone_info').innerHTML = '';
+    document.getElementById('quick_stats').innerHTML = '<p class="text-muted">Upload files to see statistics</p>';
+    
+    // Hide results
+    document.getElementById('analysis_results').style.display = 'none';
+    document.getElementById('export_section').style.display = 'none';
+}
+
+function exportReport(format) {
+    alert(`Exporting analysis report as ${format.toUpperCase()} (feature to be implemented)`);
+}
+</script>
+{% endblock %}

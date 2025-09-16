@@ -1,0 +1,340 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <h2><i class="fas fa-plus-circle"></i> Encode Secret Data</h2>
+        <p class="text-muted">Hide your secret payload inside a cover object using LSB steganography.</p>
+    </div>
+</div>
+
+<form method="POST" enctype="multipart/form-data" id="encode_form">
+    <div class="row">
+        <!-- Cover Object Selection -->
+        <div class="col-md-6">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5><i class="fas fa-image"></i> Cover Object</h5>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="cover_type" class="form-label">Cover Type</label>
+                        <select class="form-select" id="cover_type" name="cover_type" required onchange="calculateCapacity()">
+                            <option value="">Select cover type...</option>
+                            <option value="image">Image (BMP, PNG, GIF)</option>
+                            <option value="audio">Audio (WAV, PCM)</option>
+                        </select>
+                    </div>
+                    
+                    <div class="drag-drop-zone" id="cover_drop_zone">
+                        <i class="fas fa-cloud-upload-alt fa-3x text-muted mb-3"></i>
+                        <p><strong>Drop your cover file here</strong></p>
+                        <p>or click to browse</p>
+                        <input type="file" id="cover_file" name="cover_file" class="d-none" required accept=".bmp,.png,.gif,.jpg,.jpeg" onchange="calculateCapacity()">
+                    </div>
+                    <div id="cover_drop_zone_info"></div>
+                    
+                    <!-- Location Selection for Images -->
+                    <div id="location_selection" class="mt-3" style="display: none;">
+                        <h6><i class="fas fa-crosshairs"></i> Embedding Location</h6>
+                        <p class="small text-muted">Click on the image to select embedding start location</p>
+                        <div class="location-selector">
+                            <img id="cover_preview" class="img-fluid" style="max-height: 300px; cursor: crosshair;">
+                        </div>
+                        <div class="row mt-2">
+                            <div class="col-6">
+                                <label for="embed_x" class="form-label">X Coordinate</label>
+                                <input type="number" class="form-control" id="embed_x" name="embed_x" value="0" min="0">
+                            </div>
+                            <div class="col-6">
+                                <label for="embed_y" class="form-label">Y Coordinate</label>
+                                <input type="number" class="form-control" id="embed_y" name="embed_y" value="0" min="0">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Payload Selection -->
+        <div class="col-md-6">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5><i class="fas fa-file-alt"></i> Secret Payload</h5>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="payload_type" class="form-label">Payload Type</label>
+                        <select class="form-select" id="payload_type" name="payload_type">
+                            <option value="text">Text Message</option>
+                            <option value="file">File Upload</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Text Input -->
+                    <div id="text_input" class="mb-3">
+                        <label for="payload_text" class="form-label">Secret Text</label>
+                        <textarea class="form-control" id="payload_text" name="payload_text" rows="4" placeholder="Enter your secret message here..."></textarea>
+                    </div>
+                    
+                    <!-- File Upload -->
+                    <div id="file_input" class="mb-3" style="display: none;">
+                        <div class="drag-drop-zone" id="payload_drop_zone">
+                            <i class="fas fa-file-upload fa-2x text-muted mb-2"></i>
+                            <p><strong>Drop your payload file here</strong></p>
+                            <p class="small">Supports: TXT, PDF, EXE, images, etc.</p>
+                            <input type="file" id="payload_file" name="payload_file" class="d-none">
+                        </div>
+                        <div id="payload_drop_zone_info"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Steganography Settings -->
+    <div class="row">
+        <div class="col-md-8">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5><i class="fas fa-cogs"></i> Steganography Settings</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-4">
+                            <label for="lsb_count" class="form-label">Number of LSBs</label>
+                            <select class="form-select" id="lsb_count" name="lsb_count" required onchange="calculateCapacity()">
+                                <option value="1">1 bit (Most Secure)</option>
+                                <option value="2" selected>2 bits</option>
+                                <option value="3">3 bits</option>
+                                <option value="4">4 bits</option>
+                                <option value="5">5 bits</option>
+                                <option value="6">6 bits</option>
+                                <option value="7">7 bits</option>
+                                <option value="8">8 bits (Least Secure)</option>
+                            </select>
+                            <small class="text-muted">Higher values = more capacity but less secure</small>
+                        </div>
+                        <div class="col-md-8">
+                            <div class="key-input-container">
+                                <label for="key" class="form-label"><i class="fas fa-key"></i> Encryption Key</label>
+                                <input type="number" class="form-control" id="key" name="key" required placeholder="Enter numeric key (e.g., 12345)" min="1">
+                                <small class="text-muted">This key will influence LSB selection and is required for decoding</small>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row mt-3">
+                        <div class="col-md-12">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="advanced_options" onchange="toggleAdvanced()">
+                                <label class="form-check-label" for="advanced_options">
+                                    Show Advanced Options
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="advanced_settings" style="display: none;" class="mt-3">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label for="bit_order" class="form-label">Bit Order</label>
+                                <select class="form-select" id="bit_order" name="bit_order">
+                                    <option value="sequential">Sequential</option>
+                                    <option value="random">Key-based Random</option>
+                                    <option value="reverse">Reverse</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="distribution" class="form-label">Distribution Pattern</label>
+                                <select class="form-select" id="distribution" name="distribution">
+                                    <option value="linear">Linear</option>
+                                    <option value="scattered">Scattered</option>
+                                    <option value="block">Block-based</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- BMP Format Notice - Properly placed inside settings card -->
+                    <div class="alert alert-info mt-3">
+                        <small><i class="fas fa-info-circle"></i> <strong>Note:</strong> Stego images are saved in BMP format to preserve LSB modifications. BMP format is uncompressed and maintains exact pixel values needed for steganography.</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Capacity Information -->
+        <div class="col-md-4">
+            <div class="capacity-info" id="capacity_info">
+                <h6><i class="fas fa-database"></i> Capacity Information</h6>
+                <p class="text-muted">Select a cover file to see capacity details</p>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <h6><i class="fas fa-info-circle"></i> Embedding Controls</h6>
+                </div>
+                <div class="card-body">
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-custom btn-lg" id="encode_btn">
+                            <i class="fas fa-lock"></i> Encode Data
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary" onclick="resetForm()">
+                            <i class="fas fa-redo"></i> Reset Form
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</form>
+
+<!-- Real Encoding Results -->
+{% if session.get('last_encoding') %}
+<div class="row mt-4">
+    <div class="col-md-12">
+        <div class="card border-success">
+            <div class="card-header bg-success text-white">
+                <h5><i class="fas fa-check-circle"></i> Encoding Successful!</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-8">
+                        <h6><i class="fas fa-file-archive"></i> Stego File Created:</h6>
+                        <div class="alert alert-info">
+                            <h5><i class="fas fa-file"></i> {{ session['last_encoding']['stego_file'] }}</h5>
+                            <p class="mb-0">Your secret data has been hidden in this file. Use the same key ({{ session['last_encoding']['key'] }}) and LSB count ({{ session['last_encoding']['lsb_bits'] }}) to decode.</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <h6><i class="fas fa-info-circle"></i> Encoding Details:</h6>
+                        <table class="table table-sm">
+                            <tr>
+                                <td><strong>Original File:</strong></td>
+                                <td>{{ session['last_encoding']['cover_file'] }}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Payload Size:</strong></td>
+                                <td>{{ session['last_encoding']['payload_size'] }} bytes</td>
+                            </tr>
+                            <tr>
+                                <td><strong>LSB Bits:</strong></td>
+                                <td>{{ session['last_encoding']['lsb_bits'] }}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Key Used:</strong></td>
+                                <td>{{ session['last_encoding']['key'] }}</td>
+                            </tr>
+                        </table>
+                        
+                        <div class="d-grid gap-2 mt-3">
+                            <a href="/clear_session" class="btn btn-outline-secondary btn-sm">
+                                <i class="fas fa-trash"></i> Clear Results
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Setup drag and drop for cover file
+    setupDragDrop('cover_drop_zone', 'cover_file', ['image', 'audio']);
+    
+    // Setup drag and drop for payload file
+    setupDragDrop('payload_drop_zone', 'payload_file', ['payload']);
+    
+    // Payload type toggle
+    document.getElementById('payload_type').addEventListener('change', function() {
+        const textInput = document.getElementById('text_input');
+        const fileInput = document.getElementById('file_input');
+        
+        if (this.value === 'text') {
+            textInput.style.display = 'block';
+            fileInput.style.display = 'none';
+            document.getElementById('payload_file').required = false;
+        } else {
+            textInput.style.display = 'none';
+            fileInput.style.display = 'block';
+            document.getElementById('payload_file').required = true;
+        }
+    });
+    
+    // Cover file preview and location selection
+    document.getElementById('cover_file').addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        const coverType = document.getElementById('cover_type').value;
+        
+        if (file && coverType === 'image') {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const preview = document.getElementById('cover_preview');
+                preview.src = e.target.result;
+                document.getElementById('location_selection').style.display = 'block';
+                
+                // Setup location selector after image loads
+                preview.onload = function() {
+                    setupLocationSelector('cover_preview');
+                };
+            };
+            reader.readAsDataURL(file);
+        } else {
+            document.getElementById('location_selection').style.display = 'none';
+        }
+    });
+    
+    // Cover type change handler
+    document.getElementById('cover_type').addEventListener('change', function() {
+        const coverFile = document.getElementById('cover_file');
+        const locationSection = document.getElementById('location_selection');
+        
+        if (this.value === 'image') {
+            coverFile.accept = '.bmp,.png,.gif,.jpg,.jpeg';
+        } else if (this.value === 'audio') {
+            coverFile.accept = '.wav,.pcm';
+            locationSection.style.display = 'none';
+        }
+        
+        // Clear previous file
+        coverFile.value = '';
+        document.getElementById('cover_drop_zone_info').innerHTML = '';
+    });
+});
+
+function toggleAdvanced() {
+    const advanced = document.getElementById('advanced_settings');
+    const checkbox = document.getElementById('advanced_options');
+    
+    advanced.style.display = checkbox.checked ? 'block' : 'none';
+}
+
+function resetForm() {
+    document.getElementById('encode_form').reset();
+    document.getElementById('cover_drop_zone_info').innerHTML = '';
+    document.getElementById('payload_drop_zone_info').innerHTML = '';
+    document.getElementById('location_selection').style.display = 'none';
+    document.getElementById('capacity_info').innerHTML = `
+        <h6><i class="fas fa-database"></i> Capacity Information</h6>
+        <p class="text-muted">Select a cover file to see capacity details</p>
+    `;
+}
+
+// Simple form submission - no fake progress
+document.getElementById('encode_form').addEventListener('submit', function(e) {
+    const encodeBtn = document.getElementById('encode_btn');
+    
+    // Just show loading state
+    encodeBtn.disabled = true;
+    encodeBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Encoding...';
+    
+    // Form will submit normally and page will reload with results
+});
+</script>
+{% endblock %}

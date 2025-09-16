@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <div class="jumbotron bg-primary text-white p-5 rounded mb-4" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+            <h1 class="display-4"><i class="fas fa-eye-slash"></i> LSB Steganography Tool</h1>
+            <p class="lead">Hide and extract secret data using Least Significant Bit (LSB) replacement techniques in images and audio files.</p>
+            <hr class="my-4" style="border-color: rgba(255,255,255,0.3);">
+            <p>This tool supports custom binary payloads, user-defined keys, and advanced steganographic analysis features.</p>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5><i class="fas fa-plus-circle"></i> Encode Data</h5>
+            </div>
+            <div class="card-body">
+                <p>Hide secret data inside cover objects (images or audio files) using LSB replacement.</p>
+                <ul class="list-unstyled">
+                    <li><i class="fas fa-check text-success"></i> Support for BMP, PNG, GIF images</li>
+                    <li><i class="fas fa-check text-success"></i> Support for WAV, PCM audio</li>
+                    <li><i class="fas fa-check text-success"></i> Custom payload support</li>
+                    <li><i class="fas fa-check text-success"></i> User-defined encryption keys</li>
+                    <li><i class="fas fa-check text-success"></i> Selectable LSB depth (1-8 bits)</li>
+                </ul>
+                <a href="{{ url_for('encode') }}" class="btn btn-custom w-100">
+                    <i class="fas fa-arrow-right"></i> Start Encoding
+                </a>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5><i class="fas fa-search"></i> Decode Data</h5>
+            </div>
+            <div class="card-body">
+                <p>Extract hidden data from stego objects using the correct decryption key.</p>
+                <ul class="list-unstyled">
+                    <li><i class="fas fa-check text-success"></i> Automatic file type detection</li>
+                    <li><i class="fas fa-check text-success"></i> Key-based extraction</li>
+                    <li><i class="fas fa-check text-success"></i> Payload verification</li>
+                    <li><i class="fas fa-check text-success"></i> Multiple output formats</li>
+                    <li><i class="fas fa-check text-success"></i> Error detection</li>
+                </ul>
+                <a href="{{ url_for('decode') }}" class="btn btn-custom w-100">
+                    <i class="fas fa-arrow-right"></i> Start Decoding
+                </a>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5><i class="fas fa-chart-line"></i> Analyze</h5>
+            </div>
+            <div class="card-body">
+                <p>Perform steganalysis and visualize changes made to cover objects.</p>
+                <ul class="list-unstyled">
+                    <li><i class="fas fa-check text-success"></i> Visual difference maps</li>
+                    <li><i class="fas fa-check text-success"></i> LSB change visualization</li>
+                    <li><i class="fas fa-check text-success"></i> Statistical analysis</li>
+                    <li><i class="fas fa-check text-success"></i> Waveform comparison</li>
+                    <li><i class="fas fa-check text-success"></i> Capacity analysis</li>
+                </ul>
+                <a href="{{ url_for('analyze') }}" class="btn btn-custom w-100">
+                    <i class="fas fa-arrow-right"></i> Start Analysis
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-info-circle"></i> Features Overview</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6><i class="fas fa-cog"></i> Core Features</h6>
+                        <ul>
+                            <li><strong>Multi-format Support:</strong> Images (BMP, PNG, GIF) and Audio (WAV, PCM)</li>
+                            <li><strong>Custom Payloads:</strong> Text, images, executables, PDFs, and custom binary data</li>
+                            <li><strong>LSB Selection:</strong> Choose from 1-8 LSBs for embedding depth control</li>
+                            <li><strong>Drag & Drop Interface:</strong> Easy file selection and management</li>
+                            <li><strong>Location Selection:</strong> Click to choose embedding location in cover objects</li>
+                        </ul>
+                    </div>
+                    <div class="col-md-6">
+                        <h6><i class="fas fa-shield-alt"></i> Security Features</h6>
+                        <ul>
+                            <li><strong>User-Defined Keys:</strong> Numeric keys influence LSB selection and permutation</li>
+                            <li><strong>Custom Key Format:</strong> Flexible metadata structure for enhanced security</li>
+                            <li><strong>Capacity Checking:</strong> Automatic validation of payload size vs. cover capacity</li>
+                            <li><strong>Error Detection:</strong> Comprehensive validation and error reporting</li>
+                            <li><strong>Visualization:</strong> Real-time analysis of changes and differences</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-12">
+        <div class="card bg-light">
+            <div class="card-body text-center">
+                <h6><i class="fas fa-graduation-cap"></i> Educational Tool</h6>
+                <p class="mb-0">This steganography tool is designed for educational purposes to demonstrate LSB replacement techniques and steganalysis methods. Always use responsibly and in accordance with applicable laws and regulations.</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

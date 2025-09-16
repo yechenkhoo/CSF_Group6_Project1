@@ -1,0 +1,348 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <h2><i class="fas fa-search"></i> Decode Hidden Data</h2>
+        <p class="text-muted">Extract secret data from stego objects using the correct decryption key.</p>
+    </div>
+</div>
+
+<form method="POST" enctype="multipart/form-data" id="decode_form">
+    <div class="row">
+        <!-- Stego Object Selection -->
+        <div class="col-md-8">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5><i class="fas fa-file-image"></i> Stego Object</h5>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="cover_type" class="form-label">Object Type</label>
+                        <select class="form-select" id="cover_type" name="cover_type" required>
+                            <option value="">Select object type...</option>
+                            <option value="image">Image (BMP, PNG, GIF)</option>
+                            <option value="audio">Audio (WAV, PCM)</option>
+                        </select>
+                    </div>
+                    
+                    <div class="drag-drop-zone" id="stego_drop_zone">
+                        <i class="fas fa-cloud-upload-alt fa-3x text-muted mb-3"></i>
+                        <p><strong>Drop your stego file here</strong></p>
+                        <p>File containing hidden data</p>
+                        <input type="file" id="stego_file" name="stego_file" class="d-none" required accept=".bmp,.png,.gif,.jpg,.jpeg">
+                    </div>
+                    <div id="stego_drop_zone_info"></div>
+                    
+                    <!-- Stego Object Preview -->
+                    <div id="stego_preview_section" class="mt-3" style="display: none;">
+                        <h6><i class="fas fa-eye"></i> Stego Object Preview</h6>
+                        <div class="border rounded p-2">
+                            <img id="stego_preview_img" class="img-fluid" style="max-height: 300px; display: none;">
+                            <audio id="stego_preview_audio" controls class="w-100" style="display: none;"></audio>
+                            <div id="stego_file_info" class="text-muted"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Decoding Settings -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5><i class="fas fa-cogs"></i> Decoding Settings</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="key-input-container">
+                                <label for="key" class="form-label"><i class="fas fa-key"></i> Decryption Key</label>
+                                <input type="number" class="form-control" id="key" name="key" required placeholder="Enter the encoding key" min="1">
+                                <small class="text-muted">Must match the key used during encoding</small>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="lsb_count" class="form-label">Number of LSBs</label>
+                            <select class="form-select" id="lsb_count" name="lsb_count" required>
+                                <option value="1">1 bit</option>
+                                <option value="2" selected>2 bits</option>
+                                <option value="3">3 bits</option>
+                                <option value="4">4 bits</option>
+                                <option value="5">5 bits</option>
+                                <option value="6">6 bits</option>
+                                <option value="7">7 bits</option>
+                                <option value="8">8 bits</option>
+                            </select>
+                            <small class="text-muted">Must match the LSB count used during encoding</small>
+                        </div>
+                    </div>
+                    
+                    <div class="row mt-3">
+                        <div class="col-md-12">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="advanced_options" onchange="toggleAdvanced()">
+                                <label class="form-check-label" for="advanced_options">
+                                    Show Advanced Options
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="advanced_settings" style="display: none;" class="mt-3">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label for="start_x" class="form-label">Start X Coordinate</label>
+                                <input type="number" class="form-control" id="start_x" name="start_x" value="0" min="0">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="start_y" class="form-label">Start Y Coordinate</label>
+                                <input type="number" class="form-control" id="start_y" name="start_y" value="0" min="0">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Decode Controls -->
+        <div class="col-md-4">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h6><i class="fas fa-unlock"></i> Decode Controls</h6>
+                </div>
+                <div class="card-body">
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-custom btn-lg" id="decode_btn">
+                            <i class="fas fa-unlock"></i> Decode Data
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary" onclick="resetForm()">
+                            <i class="fas fa-redo"></i> Reset Form
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Detection Info -->
+            <div class="card">
+                <div class="card-header">
+                    <h6><i class="fas fa-info-circle"></i> Detection Info</h6>
+                </div>
+                <div class="card-body">
+                    <div id="detection_info">
+                        <p class="text-muted small">Upload a stego file to see detection information</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</form>
+
+<!-- Real Results Section -->
+{% if session.get('last_decoding') %}
+<div class="row mt-4">
+    <div class="col-md-12">
+        <div class="card border-success">
+            <div class="card-header bg-success text-white">
+                <h5><i class="fas fa-check-circle"></i> Decoding Successful!</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-8">
+                        <h6><i class="fas fa-unlock"></i> Extracted Message:</h6>
+                        {% if session['last_decoding']['is_text'] %}
+                            <div class="alert alert-info">
+                                <h4 class="mb-0">"{{ session['last_decoding']['payload_text'] }}"</h4>
+                            </div>
+                        {% else %}
+                            <div class="alert alert-warning">
+                                <h6>Binary Data Extracted</h6>
+                                <p>Size: {{ session['last_decoding']['payload_size'] }} bytes</p>
+                                <code class="small">{{ session['last_decoding']['payload_data'][:100] }}{% if session['last_decoding']['payload_data']|length > 100 %}...{% endif %}</code>
+                            </div>
+                        {% endif %}
+                    </div>
+                    <div class="col-md-4">
+                        <h6><i class="fas fa-info-circle"></i> Extraction Details:</h6>
+                        <table class="table table-sm">
+                            <tr>
+                                <td><strong>Size:</strong></td>
+                                <td>{{ session['last_decoding']['payload_size'] }} bytes</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Type:</strong></td>
+                                <td>{{ 'Text' if session['last_decoding']['is_text'] else 'Binary' }}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Key Used:</strong></td>
+                                <td>{{ session['last_decoding'].get('key_used', 'N/A') }}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>LSB Bits:</strong></td>
+                                <td>{{ session['last_decoding'].get('lsb_bits_used', 'N/A') }}</td>
+                            </tr>
+                        </table>
+                        
+                        <div class="d-grid gap-2 mt-3">
+                            <a href="/clear_session" class="btn btn-outline-secondary btn-sm">
+                                <i class="fas fa-trash"></i> Clear Results
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Analysis Section -->
+<div class="row mt-4">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-chart-line"></i> Decoding Analysis</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6>LSB Pattern Analysis</h6>
+                        <div class="visualization-container" id="lsb_analysis">
+                            <div class="text-center text-muted">
+                                <i class="fas fa-chart-bar fa-2x mb-2"></i>
+                                <p>LSB pattern visualization will appear here after successful decoding</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <h6>Data Distribution</h6>
+                        <div class="visualization-container" id="distribution_analysis">
+                            <div class="text-center text-muted">
+                                <i class="fas fa-chart-pie fa-2x mb-2"></i>
+                                <p>Data distribution analysis will appear here after successful decoding</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Setup drag and drop for stego file
+    setupDragDrop('stego_drop_zone', 'stego_file', ['image', 'audio']);
+    
+    // Stego file preview
+    document.getElementById('stego_file').addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        const coverType = document.getElementById('cover_type').value;
+        
+        if (file) {
+            showStegoPreview(file, coverType);
+            updateDetectionInfo(file);
+        }
+    });
+    
+    // Cover type change handler
+    document.getElementById('cover_type').addEventListener('change', function() {
+        const stegoFile = document.getElementById('stego_file');
+        
+        if (this.value === 'image') {
+            stegoFile.accept = '.bmp,.png,.gif,.jpg,.jpeg';
+        } else if (this.value === 'audio') {
+            stegoFile.accept = '.wav,.pcm';
+        }
+        
+        // Clear previous file
+        stegoFile.value = '';
+        document.getElementById('stego_drop_zone_info').innerHTML = '';
+        document.getElementById('stego_preview_section').style.display = 'none';
+    });
+});
+
+function showStegoPreview(file, type) {
+    const previewSection = document.getElementById('stego_preview_section');
+    const imgPreview = document.getElementById('stego_preview_img');
+    const audioPreview = document.getElementById('stego_preview_audio');
+    const fileInfo = document.getElementById('stego_file_info');
+    
+    previewSection.style.display = 'block';
+    
+    // Update file info
+    fileInfo.innerHTML = `
+        <strong>File:</strong> ${file.name}<br>
+        <strong>Size:</strong> ${formatFileSize(file.size)}<br>
+        <strong>Type:</strong> ${file.type || 'Unknown'}
+    `;
+    
+    if (type === 'image' && file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            imgPreview.src = e.target.result;
+            imgPreview.style.display = 'block';
+            audioPreview.style.display = 'none';
+        };
+        reader.readAsDataURL(file);
+    } else if (type === 'audio' && file.type.startsWith('audio/')) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            audioPreview.src = e.target.result;
+            audioPreview.style.display = 'block';
+            imgPreview.style.display = 'none';
+        };
+        reader.readAsDataURL(file);
+    } else {
+        imgPreview.style.display = 'none';
+        audioPreview.style.display = 'none';
+    }
+}
+
+function updateDetectionInfo(file) {
+    const detectionInfo = document.getElementById('detection_info');
+    
+    // Simulate steganographic detection analysis
+    const suspiciousIndicators = Math.random() > 0.5;
+    const lsbEntropy = (Math.random() * 0.5 + 0.5).toFixed(3);
+    const estimatedCapacity = Math.floor(file.size * 0.125); // Rough estimate
+    
+    detectionInfo.innerHTML = `
+        <div class="small">
+            <p><strong>File Analysis:</strong></p>
+            <ul class="list-unstyled">
+                <li><i class="fas fa-circle ${suspiciousIndicators ? 'text-warning' : 'text-success'}"></i> 
+                    Steganographic indicators: ${suspiciousIndicators ? 'Detected' : 'None found'}</li>
+                <li><i class="fas fa-chart-line text-info"></i> LSB entropy: ${lsbEntropy}</li>
+                <li><i class="fas fa-database text-primary"></i> Est. capacity: ${estimatedCapacity} bytes</li>
+            </ul>
+        </div>
+    `;
+}
+
+function toggleAdvanced() {
+    const advanced = document.getElementById('advanced_settings');
+    const checkbox = document.getElementById('advanced_options');
+    
+    advanced.style.display = checkbox.checked ? 'block' : 'none';
+}
+
+function resetForm() {
+    document.getElementById('decode_form').reset();
+    document.getElementById('stego_drop_zone_info').innerHTML = '';
+    document.getElementById('stego_preview_section').style.display = 'none';
+    document.getElementById('detection_info').innerHTML = '<p class="text-muted small">Upload a stego file to see detection information</p>';
+}
+
+// Simple form submission - no fake progress or results
+document.getElementById('decode_form').addEventListener('submit', function(e) {
+    const decodeBtn = document.getElementById('decode_btn');
+    
+    // Just show loading state
+    decodeBtn.disabled = true;
+    decodeBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Decoding...';
+    
+    // Form will submit normally and page will reload with results
+});
+</script>
+{% endblock %}

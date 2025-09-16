@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LSB Steganography Tool</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .drag-drop-zone {
+            border: 2px dashed #6c757d;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            margin: 20px 0;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            min-height: 150px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .drag-drop-zone:hover,
+        .drag-drop-zone.drag-over {
+            border-color: #0d6efd;
+            background-color: #f8f9ff;
+        }
+        
+        .file-info {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 10px 0;
+        }
+        
+        .visualization-container {
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            min-height: 300px;
+            background: #f8f9fa;
+        }
+        
+        .capacity-info {
+            background: linear-gradient(135deg, #e3f2fd, #f3e5f5);
+            border-radius: 10px;
+            padding: 20px;
+            margin: 15px 0;
+        }
+        
+        .key-input-container {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        
+        .progress-container {
+            margin: 20px 0;
+            display: none;
+        }
+        
+        .navbar-brand {
+            font-weight: bold;
+        }
+        
+        .card-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-custom {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            color: white;
+        }
+        
+        .btn-custom:hover {
+            background: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
+            color: white;
+        }
+        
+        .location-selector {
+            cursor: crosshair;
+            position: relative;
+            display: inline-block;
+            max-width: 100%;
+        }
+        
+        .location-marker {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            background: red;
+            border-radius: 50%;
+            border: 2px solid white;
+            box-shadow: 0 0 10px rgba(255,0,0,0.5);
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="{{ url_for('index') }}">
+                <i class="fas fa-eye-slash"></i> LSB Steganography Tool
+            </a>
+            <div class="navbar-nav ms-auto">
+                <a class="nav-link" href="{{ url_for('index') }}">Home</a>
+                <a class="nav-link" href="{{ url_for('encode') }}">Encode</a>
+                <a class="nav-link" href="{{ url_for('decode') }}">Decode</a>
+                <a class="nav-link" href="{{ url_for('analyze') }}">Analyze</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container mt-4">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ 'danger' if category == 'error' else 'info' if category == 'info' else 'success' }} alert-dismissible fade show">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="bg-dark text-light text-center py-3 mt-5">
+        <div class="container">
+            <p>&copy; 2024 LSB Steganography Tool. Educational Project.</p>
+        </div>
+    </footer>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Drag and drop functionality
+        function setupDragDrop(elementId, fileInputId, allowedTypes) {
+            const dropZone = document.getElementById(elementId);
+            const fileInput = document.getElementById(fileInputId);
+            
+            if (!dropZone || !fileInput) return;
+
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, preventDefaults, false);
+            });
+
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropZone.addEventListener(eventName, highlight, false);
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, unhighlight, false);
+            });
+
+            function highlight(e) {
+                dropZone.classList.add('drag-over');
+            }
+
+            function unhighlight(e) {
+                dropZone.classList.remove('drag-over');
+            }
+
+            dropZone.addEventListener('drop', handleDrop, false);
+            dropZone.addEventListener('click', () => fileInput.click());
+
+            function handleDrop(e) {
+                const dt = e.dataTransfer;
+                const files = dt.files;
+                
+                if (files.length > 0) {
+                    fileInput.files = files;
+                    displayFileInfo(files[0], elementId + '_info');
+                }
+            }
+
+            fileInput.addEventListener('change', function(e) {
+                if (e.target.files.length > 0) {
+                    displayFileInfo(e.target.files[0], elementId + '_info');
+                }
+            });
+        }
+
+        function displayFileInfo(file, infoElementId) {
+            const infoElement = document.getElementById(infoElementId);
+            if (infoElement) {
+                infoElement.innerHTML = `
+                    <div class="file-info">
+                        <h6><i class="fas fa-file"></i> ${file.name}</h6>
+                        <small>Size: ${formatFileSize(file.size)} | Type: ${file.type}</small>
+                    </div>
+                `;
+            }
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // Capacity calculation
+        function calculateCapacity() {
+            const coverFile = document.getElementById('cover_file');
+            const lsbCount = document.getElementById('lsb_count');
+            const coverType = document.getElementById('cover_type');
+            
+            if (!coverFile.files[0] || !lsbCount.value || !coverType.value) {
+                return;
+            }
+            
+            fetch('/api/calculate_capacity', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    cover_type: coverType.value,
+                    lsb_count: lsbCount.value,
+                    file_size: coverFile.files[0].size
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    console.error('Capacity calculation error:', data.error);
+                    return;
+                }
+                
+                const capacityInfo = document.getElementById('capacity_info');
+                if (capacityInfo) {
+                    capacityInfo.innerHTML = `
+                        <h6><i class="fas fa-database"></i> Cover Object Capacity</h6>
+                        <p><strong>Available capacity:</strong> ${data.capacity_bytes} bytes (${data.capacity_kb} KB)</p>
+                        <p><strong>Bit capacity:</strong> ${data.capacity_bits} bits</p>
+                        <p><strong>LSB count:</strong> ${lsbCount.value} bit(s) per byte</p>
+                    `;
+                }
+            })
+            .catch(error => {
+                console.error('Error calculating capacity:', error);
+            });
+        }
+
+        // Image location selection
+        function setupLocationSelector(imageId) {
+            const image = document.getElementById(imageId);
+            if (!image) return;
+
+            image.addEventListener('click', function(e) {
+                const rect = image.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                
+                // Remove existing markers
+                const existingMarkers = image.parentElement.querySelectorAll('.location-marker');
+                existingMarkers.forEach(marker => marker.remove());
+                
+                // Create new marker
+                const marker = document.createElement('div');
+                marker.className = 'location-marker';
+                marker.style.left = x + 'px';
+                marker.style.top = y + 'px';
+                
+                image.parentElement.appendChild(marker);
+                
+                // Store coordinates
+                document.getElementById('embed_x').value = Math.round(x);
+                document.getElementById('embed_y').value = Math.round(y);
+                
+                console.log(`Selected location: (${Math.round(x)}, ${Math.round(y)})`);
+            });
+        }
+    </script>
+    
+    {% block scripts %}{% endblock %}
+</body>
+</html>
