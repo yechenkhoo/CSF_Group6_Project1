@@ -201,6 +201,47 @@ def calculate_region_capacity(img_shape, region, lsb):
     return region_pixels * lsb // 8
 
 
+# ---------- Audio Time Range Selection ----------
+def time_to_sample_indices(time_range, sample_rate, n_channels, total_samples):
+    """Convert time range to sample indices"""
+    if time_range is None:
+        return np.arange(total_samples)
+    
+    start_time = time_range["start_time"]
+    end_time = time_range["end_time"]
+    
+    # Convert time to sample indices
+    start_sample = int(start_time * sample_rate * n_channels)
+    end_sample = int(end_time * sample_rate * n_channels)
+    
+    # Ensure bounds are within audio
+    start_sample = max(0, min(start_sample, total_samples - 1))
+    end_sample = max(start_sample + 1, min(end_sample, total_samples))
+    
+    return np.arange(start_sample, end_sample)
+
+
+def calculate_audio_time_capacity(audio_path, time_range, lsb):
+    """Calculate capacity for a specific time range in audio"""
+    if time_range is None:
+        with wave.open(audio_path, "rb") as wf:
+            n_ch = wf.getnchannels()
+            n_frames = wf.getnframes()
+            total_samples = n_frames * n_ch
+        return total_samples * lsb // 8
+    
+    with wave.open(audio_path, "rb") as wf:
+        n_ch = wf.getnchannels()
+        sample_rate = wf.getframerate()
+        n_frames = wf.getnframes()
+        total_samples = n_frames * n_ch
+    
+    # Get sample indices for time range
+    indices = time_to_sample_indices(time_range, sample_rate, n_ch, total_samples)
+    
+    return len(indices) * lsb // 8
+
+
 # ---------- Core Embed / Extract ----------
 def do_embed_image(
     cover_path: str, payload_path: str, out_path: str, key: str, lsb: int
@@ -435,6 +476,120 @@ def do_extract_audio(stego_path: str, out_payload_path: str, key: str, lsb: int)
 
     open(out_payload_path, "wb").write(payload)
     print(f"Extracted {len(payload)} bytes from audio -> {out_payload_path}")
+
+
+def do_embed_audio_region(
+    cover_path: str, payload_path: str, out_path: str, key: str, lsb: int, time_range=None
+):
+    """Embed payload into audio with optional time range selection"""
+    samples, n_ch, fr = load_wav_int16(cover_path)
+    buf = samples.view(np.uint16)
+    seed = seed_from_key(key)
+
+    # Get indices for embedding time range
+    if time_range:
+        available_indices = time_to_sample_indices(time_range, fr, n_ch, buf.size)
+        if len(available_indices) == 0:
+            raise ValueError("Selected time range is empty")
+        idx = traversal_indices(len(available_indices), seed)
+        # Map back to original sample indices
+        idx = available_indices[idx]
+    else:
+        idx = traversal_indices(buf.size, seed)
+
+    payload = open(payload_path, "rb").read()
+    h = Header(
+        MAGIC, VERSION, COV_AUDIO, lsb, len(payload), hashlib.sha256(payload).digest()
+    )
+    header_bytes = h.pack()
+
+    # Build bitstream: header + payload
+    bits = np.concatenate([bytes_to_bits(header_bytes), bytes_to_bits(payload)])
+    chunks, needed_slots = pack_stream_for_lsb(bits, lsb)
+
+    if needed_slots > len(idx):
+        need = (needed_slots * lsb + 7) // 8
+        cap = (len(idx) * lsb) // 8
+        time_info = (
+            f" (time {time_range['start_time']:.1f}s-{time_range['end_time']:.1f}s)" 
+            if time_range else ""
+        )
+        raise ValueError(
+            f"Payload requires ~{need} bytes but capacity is {cap} bytes{time_info}."
+        )
+
+    # Write chunks into LSBs along permutation
+    mask = np.uint16(0xFFFF ^ ((1 << lsb) - 1))
+    target = buf.copy()
+    sel = idx[:needed_slots].astype(np.int64)
+    target[sel] = (target[sel] & mask) | chunks.astype(np.uint16)
+    
+    # Save back as int16
+    out_i16 = target.view(np.int16)
+    save_wav_int16(out_path, out_i16, n_ch, fr)
+    
+    time_info = (
+        f" (time {time_range['start_time']:.1f}s-{time_range['end_time']:.1f}s)" 
+        if time_range else ""
+    )
+    print(f"Embedded {len(payload)} bytes into audio{time_info} -> {out_path}")
+
+
+def do_extract_audio_region(
+    stego_path: str, out_payload_path: str, key: str, lsb: int, time_range=None
+):
+    """Extract payload from audio with optional time range selection"""
+    samples, n_ch, fr = load_wav_int16(stego_path)
+    buf = samples.view(np.uint16)
+    seed = seed_from_key(key)
+
+    # Get indices for extraction time range (must match embedding)
+    if time_range:
+        available_indices = time_to_sample_indices(time_range, fr, n_ch, buf.size)
+        if len(available_indices) == 0:
+            raise ValueError("Selected time range is empty")
+        idx = traversal_indices(len(available_indices), seed)
+        # Map back to original sample indices
+        idx = available_indices[idx]
+    else:
+        idx = traversal_indices(buf.size, seed)
+
+    # First, read header bits
+    hdr_bits_needed = HEADER_BYTES * 8
+    slots_for_hdr = (hdr_bits_needed + lsb - 1) // lsb
+
+    if slots_for_hdr > len(idx):
+        raise ValueError("Not enough capacity to read header from selected time range")
+
+    sel_hdr = idx[:slots_for_hdr].astype(np.int64)
+    vals_hdr = (buf[sel_hdr] & ((1 << lsb) - 1)).astype(np.uint16)
+    hdr_bits = unpack_stream_from_lsb(vals_hdr, hdr_bits_needed, lsb)
+    hdr = Header.unpack(bits_to_bytes(hdr_bits))
+
+    if hdr.cover_type != COV_AUDIO or hdr.lsb_count != lsb:
+        raise ValueError("Wrong key/cover/lsb settings (header mismatch).")
+
+    total_payload_bits = hdr.payload_len * 8
+    slots_for_payload = (total_payload_bits + lsb - 1) // lsb
+
+    if slots_for_hdr + slots_for_payload > len(idx):
+        raise ValueError("Not enough capacity to read payload from selected time range")
+
+    sel_pl = idx[slots_for_hdr : slots_for_hdr + slots_for_payload].astype(np.int64)
+    vals_pl = (buf[sel_pl] & ((1 << lsb) - 1)).astype(np.uint16)
+    pay_bits = unpack_stream_from_lsb(vals_pl, total_payload_bits, lsb)
+    payload = bits_to_bytes(pay_bits)
+
+    if hashlib.sha256(payload).digest() != hdr.payload_sha256:
+        raise ValueError("Integrity check failed (wrong key or corrupted stego).")
+
+    open(out_payload_path, "wb").write(payload)
+    
+    time_info = (
+        f" (time {time_range['start_time']:.1f}s-{time_range['end_time']:.1f}s)" 
+        if time_range else ""
+    )
+    print(f"Extracted {len(payload)} bytes from audio{time_info} -> {out_payload_path}")
 
 
 # ---------- CLI ----------
