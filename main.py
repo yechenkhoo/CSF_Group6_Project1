@@ -9,6 +9,7 @@ VERSION = 1
 COV_IMAGE = 0
 COV_AUDIO = 1
 
+
 @dataclass
 class Header:
     magic: bytes
@@ -19,9 +20,13 @@ class Header:
     payload_sha256: bytes
 
     def pack(self) -> bytes:
-        return MAGIC + struct.pack(
-            ">BBBBQ", VERSION, self.cover_type, self.lsb_count, 0, self.payload_len
-        ) + self.payload_sha256
+        return (
+            MAGIC
+            + struct.pack(
+                ">BBBBQ", VERSION, self.cover_type, self.lsb_count, 0, self.payload_len
+            )
+            + self.payload_sha256
+        )
         # Note: the single zero byte is reserved for future options.
 
     @staticmethod
@@ -30,19 +35,26 @@ class Header:
             raise ValueError("Header too short")
         if b[:4] != MAGIC:
             raise ValueError("Bad magic")
-        version, cover, lsb, _opt, plen = struct.unpack(">BBBBQ", b[4:4+1+1+1+1+8])
-        sha = b[4+1+1+1+1+8:4+1+1+1+1+8+32]
+        version, cover, lsb, _opt, plen = struct.unpack(
+            ">BBBBQ", b[4 : 4 + 1 + 1 + 1 + 1 + 8]
+        )
+        sha = b[4 + 1 + 1 + 1 + 1 + 8 : 4 + 1 + 1 + 1 + 1 + 8 + 32]
         return Header(MAGIC, version, cover, lsb, plen, sha)
 
-HEADER_BYTES = 4 + (1+1+1+1+8) + 32
+
+HEADER_BYTES = 4 + (1 + 1 + 1 + 1 + 8) + 32
 # Bits needed depend on lsb count chosen at encode-time.
+
 
 # ---------- Key schedule ----------
 def seed_from_key(key: str) -> int:
     h = hashlib.sha256(key.encode("utf-8")).digest()
     return int.from_bytes(h, "big")
 
-def traversal_indices(n_slots: int, seed: int, start_at: Optional[int]=None) -> np.ndarray:
+
+def traversal_indices(
+    n_slots: int, seed: int, start_at: Optional[int] = None
+) -> np.ndarray:
     """Return a deterministic permutation of [0..n_slots-1] with a key-based rotation."""
     rng = np.random.default_rng(seed)
     idx = np.arange(n_slots, dtype=np.uint64)
@@ -52,6 +64,7 @@ def traversal_indices(n_slots: int, seed: int, start_at: Optional[int]=None) -> 
     # rotate so that we start at (start_at)
     return np.concatenate([idx[start_at:], idx[:start_at]])
 
+
 # ---------- Bit helpers ----------
 def bytes_to_bits(data: bytes) -> np.ndarray:
     arr = np.frombuffer(data, dtype=np.uint8)
@@ -59,12 +72,14 @@ def bytes_to_bits(data: bytes) -> np.ndarray:
     bits = np.unpackbits(arr)
     return bits
 
+
 def bits_to_bytes(bits: np.ndarray) -> bytes:
     # pad to multiple of 8
     if bits.size % 8 != 0:
         pad = 8 - (bits.size % 8)
         bits = np.concatenate([bits, np.zeros(pad, dtype=np.uint8)])
     return np.packbits(bits).tobytes()
+
 
 def pack_stream_for_lsb(bitstream: np.ndarray, lsb: int) -> Tuple[np.ndarray, int]:
     """Group bits into chunks of 'lsb' per cover slot. Returns (chunks, n_slots_used)."""
@@ -77,38 +92,48 @@ def pack_stream_for_lsb(bitstream: np.ndarray, lsb: int) -> Tuple[np.ndarray, in
         bitstream = np.concatenate([bitstream, np.zeros(pad, dtype=np.uint8)])
     grouped = bitstream.reshape(-1, lsb)
     # interpret each row as an integer (MSB..LSB inside the chunk)
-    weights = (1 << np.arange(lsb-1, -1, -1)).astype(np.uint16)  # e.g., lsb=3 -> [4,2,1]
+    weights = (1 << np.arange(lsb - 1, -1, -1)).astype(
+        np.uint16
+    )  # e.g., lsb=3 -> [4,2,1]
     vals = (grouped * weights).sum(axis=1).astype(np.uint16)
     return vals, vals.size
+
 
 def unpack_stream_from_lsb(vals: np.ndarray, total_bits: int, lsb: int) -> np.ndarray:
     """Inverse of pack_stream_for_lsb."""
     # vals are in [0 .. (1<<lsb)-1]
     out = np.zeros((vals.size, lsb), dtype=np.uint8)
     for i in range(lsb):
-        shift = (lsb - 1 - i)
+        shift = lsb - 1 - i
         out[:, i] = (vals >> shift) & 1
     bits = out.reshape(-1)
     return bits[:total_bits]
+
 
 # ---------- Capacity ----------
 def capacity_bits_image(img: np.ndarray, lsb: int) -> int:
     return img.size * lsb  # bytes == channels * H * W; each byte gets 'lsb' bits
 
+
 def capacity_bits_audio(samples: np.ndarray, lsb: int) -> int:
     return samples.size * lsb  # each int16 sample holds 'lsb' bits
 
+
 # ---------- Image I/O ----------
-def load_image_bytes(path: str) -> Tuple[np.ndarray, Tuple[int,int,int], str]:
+def load_image_bytes(path: str) -> Tuple[np.ndarray, Tuple[int, int, int], str]:
     im = Image.open(path).convert("RGBA" if path.lower().endswith(".png") else "RGB")
     arr = np.array(im, dtype=np.uint8)
     mode = "RGBA" if arr.shape[-1] == 4 else "RGB"
     return arr, arr.shape, mode
 
+
 def save_image_bytes(path: str, arr: np.ndarray, mode_hint: str):
-    im = Image.fromarray(arr.astype(np.uint8), mode="RGBA" if arr.shape[-1]==4 else "RGB")
+    im = Image.fromarray(
+        arr.astype(np.uint8), mode="RGBA" if arr.shape[-1] == 4 else "RGB"
+    )
     # Preserve extension's format
     im.save(path)
+
 
 # ---------- Audio I/O (16-bit PCM) ----------
 def load_wav_int16(path: str) -> Tuple[np.ndarray, int, int]:
@@ -124,6 +149,7 @@ def load_wav_int16(path: str) -> Tuple[np.ndarray, int, int]:
     # keep interleaved layout; shape = (n_frames * n_ch,)
     return data.copy(), n_ch, fr  # copy to make it writable
 
+
 def save_wav_int16(path: str, data: np.ndarray, n_channels: int, fr: int):
     if data.dtype != np.int16:
         data = data.astype(np.int16)
@@ -133,15 +159,61 @@ def save_wav_int16(path: str, data: np.ndarray, n_channels: int, fr: int):
         wf.setframerate(fr)
         wf.writeframes(data.tobytes())
 
+
+# ---------- Region Selection ----------
+def get_region_indices(img_shape, region):
+    """Get flat indices for a rectangular region"""
+    if region is None:
+        return np.arange(np.prod(img_shape))
+
+    h, w, c = img_shape
+    x, y, rw, rh = region["x"], region["y"], region["width"], region["height"]
+
+    # Ensure region bounds are within image
+    x = max(0, min(x, w - 1))
+    y = max(0, min(y, h - 1))
+    rw = min(rw, w - x)
+    rh = min(rh, h - y)
+
+    indices = []
+    for row in range(y, y + rh):
+        for col in range(x, x + rw):
+            for ch in range(c):
+                flat_idx = (row * w + col) * c + ch
+                indices.append(flat_idx)
+
+    return np.array(indices)
+
+
+def calculate_region_capacity(img_shape, region, lsb):
+    """Calculate capacity for a specific region"""
+    if region is None:
+        return np.prod(img_shape) * lsb // 8
+
+    h, w, c = img_shape
+    x, y, rw, rh = region["x"], region["y"], region["width"], region["height"]
+
+    # checks if region bounds are within image
+    rw = min(rw, w - x)
+    rh = min(rh, h - y)
+
+    region_pixels = rw * rh * c
+    return region_pixels * lsb // 8
+
+
 # ---------- Core Embed / Extract ----------
-def do_embed_image(cover_path: str, payload_path: str, out_path: str, key: str, lsb: int):
+def do_embed_image(
+    cover_path: str, payload_path: str, out_path: str, key: str, lsb: int
+):
     img, shape, mode = load_image_bytes(cover_path)
     flat = img.reshape(-1)  # uint8
     seed = seed_from_key(key)
     idx = traversal_indices(flat.size, seed)
 
     payload = open(payload_path, "rb").read()
-    h = Header(MAGIC, VERSION, COV_IMAGE, lsb, len(payload), hashlib.sha256(payload).digest())
+    h = Header(
+        MAGIC, VERSION, COV_IMAGE, lsb, len(payload), hashlib.sha256(payload).digest()
+    )
     header_bytes = h.pack()
 
     # Build bitstream: header + payload
@@ -150,7 +222,7 @@ def do_embed_image(cover_path: str, payload_path: str, out_path: str, key: str, 
 
     cap_bits = capacity_bits_image(img, lsb)
     if needed_slots > flat.size:
-        need = (needed_slots * lsb + 7)//8
+        need = (needed_slots * lsb + 7) // 8
         cap = cap_bits // 8
         raise ValueError(f"Payload requires ~{need} bytes but capacity is {cap} bytes.")
 
@@ -162,6 +234,7 @@ def do_embed_image(cover_path: str, payload_path: str, out_path: str, key: str, 
     stego = target.reshape(shape)
     save_image_bytes(out_path, stego, mode)
     print(f"Embedded {len(payload)} bytes into image -> {out_path}")
+
 
 def do_extract_image(stego_path: str, out_payload_path: str, key: str, lsb: int):
     img, shape, mode = load_image_bytes(stego_path)
@@ -183,7 +256,7 @@ def do_extract_image(stego_path: str, out_payload_path: str, key: str, lsb: int)
 
     total_payload_bits = hdr.payload_len * 8
     slots_for_payload = (total_payload_bits + lsb - 1) // lsb
-    sel_pl = idx[slots_for_hdr:slots_for_hdr + slots_for_payload].astype(np.int64)
+    sel_pl = idx[slots_for_hdr : slots_for_hdr + slots_for_payload].astype(np.int64)
     vals_pl = (flat[sel_pl] & ((1 << lsb) - 1)).astype(np.uint16)
     pay_bits = unpack_stream_from_lsb(vals_pl, total_payload_bits, lsb)
     payload = bits_to_bytes(pay_bits)
@@ -194,7 +267,115 @@ def do_extract_image(stego_path: str, out_payload_path: str, key: str, lsb: int)
     open(out_payload_path, "wb").write(payload)
     print(f"Extracted {len(payload)} bytes from image -> {out_payload_path}")
 
-def do_embed_audio(cover_path: str, payload_path: str, out_path: str, key: str, lsb: int):
+
+def do_embed_image_region(
+    cover_path: str, payload_path: str, out_path: str, key: str, lsb: int, region=None
+):
+    """Embed payload into image with optional region selection"""
+    img, shape, mode = load_image_bytes(cover_path)
+    flat = img.reshape(-1)
+    seed = seed_from_key(key)
+
+    # gets indices for embedding region
+    if region:
+        available_indices = get_region_indices(shape, region)
+        if len(available_indices) == 0:
+            raise ValueError("Selected region is empty")
+        idx = traversal_indices(len(available_indices), seed)
+        # need to map back to original flat indices
+        idx = available_indices[idx]
+    else:
+        idx = traversal_indices(flat.size, seed)
+
+    payload = open(payload_path, "rb").read()
+    h = Header(
+        MAGIC, VERSION, COV_IMAGE, lsb, len(payload), hashlib.sha256(payload).digest()
+    )
+    header_bytes = h.pack()
+
+    # builds bitstream: header + payload
+    bits = np.concatenate([bytes_to_bits(header_bytes), bytes_to_bits(payload)])
+    chunks, needed_slots = pack_stream_for_lsb(bits, lsb)
+
+    if needed_slots > len(idx):
+        need = (needed_slots * lsb + 7) // 8
+        cap = (len(idx) * lsb) // 8
+        region_info = (
+            f" (region {region['width']}×{region['height']})" if region else ""
+        )
+        raise ValueError(
+            f"Payload requires ~{need} bytes but capacity is {cap} bytes{region_info}."
+        )
+
+    # Write chunks into LSBs along permutation
+    mask = np.uint8(0xFF ^ ((1 << lsb) - 1))
+    target = flat.copy()
+    sel = idx[:needed_slots].astype(np.int64)
+    target[sel] = (target[sel] & mask) | chunks.astype(np.uint8)
+    stego = target.reshape(shape)
+    save_image_bytes(out_path, stego, mode)
+    region_info = f" (region {region['width']}×{region['height']})" if region else ""
+    print(f"Embedded {len(payload)} bytes into image{region_info} -> {out_path}")
+
+
+def do_extract_image_region(
+    stego_path: str, out_payload_path: str, key: str, lsb: int, region=None
+):
+    """Extract payload from image with optional region selection"""
+    img, shape, mode = load_image_bytes(stego_path)
+    flat = img.reshape(-1)
+    seed = seed_from_key(key)
+
+    # Get indices for extraction region (must match embedding)
+    if region:
+        available_indices = get_region_indices(shape, region)
+        if len(available_indices) == 0:
+            raise ValueError("Selected region is empty")
+        idx = traversal_indices(len(available_indices), seed)
+        # Map back to original flat indices
+        idx = available_indices[idx]
+    else:
+        idx = traversal_indices(flat.size, seed)
+
+    # First, read header bits
+    hdr_bits_needed = HEADER_BYTES * 8
+    slots_for_hdr = (hdr_bits_needed + lsb - 1) // lsb
+
+    if slots_for_hdr > len(idx):
+        raise ValueError("Not enough capacity to read header from selected region")
+
+    sel_hdr = idx[:slots_for_hdr].astype(np.int64)
+    vals_hdr = (flat[sel_hdr] & ((1 << lsb) - 1)).astype(np.uint16)
+    hdr_bits = unpack_stream_from_lsb(vals_hdr, hdr_bits_needed, lsb)
+    hdr = Header.unpack(bits_to_bytes(hdr_bits))
+
+    if hdr.cover_type != COV_IMAGE or hdr.lsb_count != lsb:
+        raise ValueError("Wrong key/cover/lsb settings (header mismatch).")
+
+    total_payload_bits = hdr.payload_len * 8
+    slots_for_payload = (total_payload_bits + lsb - 1) // lsb
+
+    if slots_for_hdr + slots_for_payload > len(idx):
+        raise ValueError("Not enough capacity to read payload from selected region")
+
+    sel_pl = idx[slots_for_hdr : slots_for_hdr + slots_for_payload].astype(np.int64)
+    vals_pl = (flat[sel_pl] & ((1 << lsb) - 1)).astype(np.uint16)
+    pay_bits = unpack_stream_from_lsb(vals_pl, total_payload_bits, lsb)
+    payload = bits_to_bytes(pay_bits)
+
+    if hashlib.sha256(payload).digest() != hdr.payload_sha256:
+        raise ValueError("Integrity check failed (wrong key or corrupted stego).")
+
+    open(out_payload_path, "wb").write(payload)
+    region_info = f" (region {region['width']}×{region['height']})" if region else ""
+    print(
+        f"Extracted {len(payload)} bytes from image{region_info} -> {out_payload_path}"
+    )
+
+
+def do_embed_audio(
+    cover_path: str, payload_path: str, out_path: str, key: str, lsb: int
+):
     samples, n_ch, fr = load_wav_int16(cover_path)
     # Work with uint16 to avoid sign issues when masking
     buf = samples.view(np.uint16)
@@ -202,7 +383,9 @@ def do_embed_audio(cover_path: str, payload_path: str, out_path: str, key: str, 
     idx = traversal_indices(buf.size, seed)
 
     payload = open(payload_path, "rb").read()
-    h = Header(MAGIC, VERSION, COV_AUDIO, lsb, len(payload), hashlib.sha256(payload).digest())
+    h = Header(
+        MAGIC, VERSION, COV_AUDIO, lsb, len(payload), hashlib.sha256(payload).digest()
+    )
     header_bytes = h.pack()
 
     bits = np.concatenate([bytes_to_bits(header_bytes), bytes_to_bits(payload)])
@@ -210,7 +393,7 @@ def do_embed_audio(cover_path: str, payload_path: str, out_path: str, key: str, 
 
     cap_bits = capacity_bits_audio(buf, lsb)
     if needed_slots > buf.size:
-        need = (needed_slots * lsb + 7)//8
+        need = (needed_slots * lsb + 7) // 8
         cap = cap_bits // 8
         raise ValueError(f"Payload requires ~{need} bytes but capacity is {cap} bytes.")
 
@@ -222,6 +405,7 @@ def do_embed_audio(cover_path: str, payload_path: str, out_path: str, key: str, 
     out_i16 = target.view(np.int16)
     save_wav_int16(out_path, out_i16, n_ch, fr)
     print(f"Embedded {len(payload)} bytes into audio -> {out_path}")
+
 
 def do_extract_audio(stego_path: str, out_payload_path: str, key: str, lsb: int):
     samples, n_ch, fr = load_wav_int16(stego_path)
@@ -241,7 +425,7 @@ def do_extract_audio(stego_path: str, out_payload_path: str, key: str, lsb: int)
 
     total_payload_bits = hdr.payload_len * 8
     slots_for_payload = (total_payload_bits + lsb - 1) // lsb
-    sel_pl = idx[slots_for_hdr:slots_for_hdr + slots_for_payload].astype(np.int64)
+    sel_pl = idx[slots_for_hdr : slots_for_hdr + slots_for_payload].astype(np.int64)
     vals_pl = (buf[sel_pl] & ((1 << lsb) - 1)).astype(np.uint16)
     pay_bits = unpack_stream_from_lsb(vals_pl, total_payload_bits, lsb)
     payload = bits_to_bytes(pay_bits)
@@ -251,6 +435,7 @@ def do_extract_audio(stego_path: str, out_payload_path: str, key: str, lsb: int)
 
     open(out_payload_path, "wb").write(payload)
     print(f"Extracted {len(payload)} bytes from audio -> {out_payload_path}")
+
 
 # ---------- CLI ----------
 def main():
@@ -289,6 +474,7 @@ def main():
             do_extract_audio(args.stego, args.out, args.key, args.lsb)
         else:
             sys.exit("Unsupported stego type. Use PNG/BMP or 16-bit PCM WAV.")
+
 
 if __name__ == "__main__":
     main()
