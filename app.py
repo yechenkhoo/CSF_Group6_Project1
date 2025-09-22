@@ -20,6 +20,7 @@ from main import (
 
 SUPPORTED_IMAGE_EXTS = {".png", ".bmp"}
 SUPPORTED_AUDIO_EXTS = {".wav"}
+SUPPORTED_VIDEO_EXTS = {".mp4", ".mov", ".mkv"}
 
 st.set_page_config(page_title="LSB Stego", layout="wide")
 
@@ -209,11 +210,11 @@ def encode_ui():
 
     with c1:
         cover_up = st.file_uploader(
-            "Cover file (.png/.bmp or .wav)", type=["png", "bmp", "wav"], key="cover"
+            "Cover file (.png/.bmp/.mp4/.mov/.mkv or .wav)", type=["png", "bmp", "wav", "mp4", "mov", "mkv"], key="cover"
         )
         payload_up = st.file_uploader("Payload file (any)", type=None, key="payload")
         out_name = st.text_input("Output stego filename", value="stego")
-        ext_choice = st.selectbox("Output type", [".png", ".bmp", ".wav"], index=0)
+        ext_choice = st.selectbox("Output type", [".png", ".bmp", ".wav", ".mp4"], index=0)
         go = st.button("Embed", type="primary")
 
         if cover_up is not None:
@@ -231,6 +232,8 @@ def encode_ui():
                 elif cov_ext in SUPPORTED_AUDIO_EXTS:
                     cap = _capacity_wav_bytes(cov_bytes, lsb)
                     st.info(f"Cover capacity: {cap:,} bytes (lsb={lsb})")
+                elif cov_ext in SUPPORTED_VIDEO_EXTS:
+                    st.info("Video capacity not estimated here. Use default settings or separate video UI.")
                 else:
                     st.warning("Unsupported cover type")
             except Exception as e:
@@ -296,6 +299,17 @@ def encode_ui():
                     st.info(f"Time range capacity: {time_cap:,} bytes (lsb={lsb})")
                 except Exception as e:
                     st.warning(f"Time range capacity calculation failed: {e}")
+        elif cover_up is not None and (cover_up.type.startswith("video/") or os.path.splitext(cover_up.name)[1].lower() in SUPPORTED_VIDEO_EXTS):
+            st.video(cover_up)
+            frame_step = st.number_input(
+                "Every Nth frame for video (must match on decode)",
+                min_value=1,
+                max_value=1000,
+                value=10,
+                step=1,
+                key="vid_step_preview",
+            )
+            st.caption("Choose .mp4 as output. Keep frame step consistent for decoding.")
 
     if go:
         if not key:
@@ -395,9 +409,20 @@ def encode_ui():
                             f,
                             file_name=os.path.basename(out_path),
                         )
+                elif cov_ext in SUPPORTED_VIDEO_EXTS and ext_choice == ".mp4":
+                    from main import do_embed_video
+                    do_embed_video(cover_path, payload_path, out_path, key, lsb, int(st.session_state.get("vid_step_preview", 10)))
+                    st.success("Embedded into video stego")
+                    st.info("Stego video created. Preview disabled (lossless codec not browser-friendly). Please download and play locally.")
+                    with open(out_path, "rb") as f:
+                        st.download_button(
+                            "Download stego video",
+                            f,
+                            file_name=os.path.basename(out_path),
+                        )
                 else:
                     st.error(
-                        "Output type must match cover family (image→.png/.bmp, audio→.wav)"
+                        "Output type must match cover family (image→.png/.bmp, audio→.wav, video→.mp4)"
                     )
             except Exception as e:
                 st.error(f"Embed failed: {e}")
@@ -409,7 +434,7 @@ def decode_ui():
 
     with c1:
         stego_up = st.file_uploader(
-            "Stego file (.png/.bmp or .wav)", type=["png", "bmp", "wav"], key="stego"
+            "Stego file (.png/.bmp/.mp4/.mov/.mkv or .wav)", type=["png", "bmp", "wav", "mp4", "mov", "mkv"], key="stego"
         )
         out_label = st.text_input("Name for extracted file", value="payload.txt")
         go2 = st.button("Extract", type="primary")
@@ -452,6 +477,16 @@ def decode_ui():
                 if waveform_fig:
                     st.pyplot(waveform_fig)
                     plt.close(waveform_fig)
+        elif stego_up is not None and (stego_up.type.startswith("video/") or os.path.splitext(stego_up.name)[1].lower() in SUPPORTED_VIDEO_EXTS):
+            st.video(stego_up)
+            frame_step = st.number_input(
+                "Every Nth frame for video (must match encode)",
+                min_value=1,
+                max_value=1000,
+                value=10,
+                step=1,
+                key="vid_step_preview_decode",
+            )
 
     if go2:
         if not key:
@@ -484,6 +519,45 @@ def decode_ui():
                     else:
                         do_extract_audio(stego_path, out_path, key, lsb)
                         st.success("Extracted payload from audio")
+                elif stego_ext in SUPPORTED_VIDEO_EXTS:
+                    from main import do_extract_video
+                    step_val = int(st.session_state.get("vid_step_preview_decode", 10))
+                    with st.spinner("Decoding video payload..."):
+                        try:
+                            do_extract_video(stego_path, out_path, key, lsb, step_val)
+                            st.success("Extracted payload from video")
+                        except Exception as e:
+                            if "Bad magic" in str(e) or "Bad magic" in getattr(e, "args", [""])[0]:
+                                step_candidates = [step_val] + [1, 2, 3, 5, 10, 15, 20, 24, 25, 30]
+                                lsb_candidates = [lsb] + [i for i in range(1, 9) if i != lsb]
+                                tried = set()
+                                found = None
+                                for lsb_try in lsb_candidates:
+                                    for step_try in step_candidates:
+                                        key_t = (lsb_try, step_try)
+                                        if key_t in tried:
+                                            continue
+                                        tried.add(key_t)
+                                        try:
+                                            do_extract_video(stego_path, out_path, key, int(lsb_try), int(step_try))
+                                            found = (lsb_try, step_try)
+                                            break
+                                        except Exception as e2:
+                                            if "Bad magic" in str(e2) or "Bad magic" in getattr(e2, "args", [""])[0]:
+                                                continue
+                                            else:
+                                                # some other error; surface it
+                                                raise
+                                    if found:
+                                        break
+                                if found:
+                                    st.info(f"Auto-detected settings: LSB={found[0]}, frame step={found[1]}")
+                                    st.success("Extracted payload from video")
+                                else:
+                                    st.error("Failed to extract from video. Possible causes: wrong key/LSB, wrong frame step, or the video was transcoded (lossy). Try re-embedding and extracting immediately with the same settings.")
+                                    st.stop()
+                            else:
+                                raise
                 else:
                     st.error("Unsupported stego type")
                     st.stop()
@@ -545,3 +619,8 @@ if mode == "Encode (Embed)":
 # ---------- UI: Decode ----------
 else:
     decode_ui()
+
+# ---------- Video (MP4/MOV/MKV) Experimental UI ----------
+SUPPORTED_VIDEO_EXTS = {".mp4", ".mov", ".mkv"}
+
+

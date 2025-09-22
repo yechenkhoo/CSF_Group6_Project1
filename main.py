@@ -633,3 +633,233 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# ---------- Video support (experimental, lossless pipeline) ----------
+try:
+    import imageio.v2 as imageio  # imageio provides ffmpeg-backed readers/writers
+except Exception as _e:
+    imageio = None  # Will raise at runtime if used without dependency
+
+# Define video cover type without touching existing constants
+COV_VIDEO = 2
+
+
+def _load_video_frames_rgb(video_path: str):
+    """Yield frames as uint8 RGB arrays and return fps, size via side-channel.
+
+    Returns a tuple (frames_iterable, meta) where meta = {"fps": float, "size": (w, h), "n_frames": int}
+    """
+    if imageio is None:
+        raise RuntimeError("imageio is required for video support. Please install imageio[ffmpeg].")
+
+    reader = imageio.get_reader(video_path)
+    meta = reader.get_meta_data()
+    fps = meta.get("fps", 30)
+    size = None
+    n_frames = meta.get("nframes", None)
+
+    def _iter():
+        nonlocal size
+        for frame in reader:
+            # frame is HxWx3 uint8 in RGB order
+            if size is None:
+                size = (frame.shape[1], frame.shape[0])
+            yield frame.astype(np.uint8, copy=False)
+        reader.close()
+
+    frames_iter = _iter()
+    return frames_iter, {"fps": fps, "size": size, "n_frames": n_frames}
+
+
+def _save_video_frames_rgb(out_path: str, frames_iter, fps: float):
+    """Write RGB uint8 frames using a mathematically lossless pipeline.
+
+    We use libx264rgb with -crf 0 and rgb24 pixel format to preserve exact bytes.
+    Requires ffmpeg with libx264 support.
+    """
+    if imageio is None:
+        raise RuntimeError("imageio is required for video support. Please install imageio[ffmpeg].")
+
+    writer = imageio.get_writer(
+        out_path,
+        fps=fps,
+        codec="libx264rgb",
+        format="FFMPEG",
+        quality=None,
+        ffmpeg_params=["-crf", "0", "-pix_fmt", "rgb24", "-preset", "veryslow"],
+        macro_block_size=1,  # prevent implicit resizing that would destroy embedded bits
+    )
+    try:
+        for f in frames_iter:
+            writer.append_data(f)
+    finally:
+        writer.close()
+
+
+def _video_traversal_indices_for_frames(frame_shapes: list, lsb: int, key_seed: int, frame_step: int):
+    """Build a global index mapping over selected frames' flattened bytes.
+
+    Returns (frame_indices, flat_indices_per_frame, total_slots) where:
+    - frame_indices: list of frame numbers used (subset)
+    - flat_indices_per_frame: list of numpy arrays of flat indices inside that frame (uint64)
+    - total_slots: total number of available byte slots across selected frames
+    """
+    selected_frames = list(range(0, len(frame_shapes), max(1, int(frame_step))))
+    flat_indices_per_frame = []
+    total_slots = 0
+    for _fi in selected_frames:
+        h, w, c = frame_shapes[_fi]
+        n = h * w * c
+        idx = np.arange(n, dtype=np.uint64)
+        flat_indices_per_frame.append(idx)
+        total_slots += n
+
+    # Build a global permutation across all slots for uniform scatter
+    global_idx = traversal_indices(total_slots, key_seed)
+
+    return selected_frames, flat_indices_per_frame, global_idx, total_slots
+
+
+def _iter_video_frames(video_path: str):
+    frames, meta = _load_video_frames_rgb(video_path)
+    # Materialize frames into memory to allow random-like traversal; for large videos this could be heavy
+    cached = []
+    for f in frames:
+        cached.append(f.copy())
+    if meta.get("n_frames") is None:
+        meta["n_frames"] = len(cached)
+    return cached, meta
+
+
+def do_embed_video(cover_path: str, payload_path: str, out_path: str, key: str, lsb: int, frame_step: int = 10):
+    """Embed payload into a video by modifying LSBs of selected frames (every frame_step frames).
+
+    The output is encoded losslessly (libx264rgb -crf 0) to preserve embedded bits.
+    """
+    if lsb < 1 or lsb > 8:
+        raise ValueError("lsb must be 1..8 for video as well")
+
+    frames, meta = _iter_video_frames(cover_path)
+    if not frames:
+        raise ValueError("No frames found in video")
+
+    frame_shapes = [f.shape for f in frames]  # list of (H, W, 3)
+    seed = seed_from_key(key)
+
+    payload = open(payload_path, "rb").read()
+    header = Header(MAGIC, VERSION, COV_VIDEO, lsb, len(payload), hashlib.sha256(payload).digest())
+    header_bytes = header.pack()
+
+    bits = np.concatenate([bytes_to_bits(header_bytes), bytes_to_bits(payload)])
+    chunks, needed_slots = pack_stream_for_lsb(bits, lsb)
+
+    # Capacity
+    selected_frames, per_frame_idx, global_perm, total_slots = _video_traversal_indices_for_frames(
+        frame_shapes, lsb, seed, frame_step
+    )
+    if needed_slots > total_slots:
+        need = (needed_slots * lsb + 7) // 8
+        cap = (total_slots * lsb) // 8
+        raise ValueError(f"Payload requires ~{need} bytes but capacity is {cap} bytes across selected frames.")
+
+    # Map global permutation to (frame, local_index)
+    mask = np.uint8(0xFF ^ ((1 << lsb) - 1))
+    remaining = needed_slots
+    cursor = 0
+    # Precompute cumulative sizes
+    per_frame_sizes = [idx.size for idx in per_frame_idx]
+    cum_sizes = np.cumsum([0] + per_frame_sizes)
+
+    # Apply writes
+    for i, frame_number in enumerate(selected_frames):
+        start_global = cum_sizes[i]
+        end_global = cum_sizes[i + 1]
+        # Among the global permutation, find positions that fall into this frame's slot range
+        in_frame_mask = (global_perm < end_global) & (global_perm >= start_global)
+        picks = global_perm[in_frame_mask] - start_global
+        if picks.size == 0:
+            continue
+        apply_count = min(picks.size, remaining)
+        if apply_count <= 0:
+            break
+        flat_indices = per_frame_idx[i][picks[:apply_count]].astype(np.int64)
+        frame = frames[frame_number]
+        flat = frame.reshape(-1)
+        flat[flat_indices] = (flat[flat_indices] & mask) | chunks[cursor : cursor + apply_count].astype(np.uint8)
+        frames[frame_number] = flat.reshape(frame.shape)
+        cursor += apply_count
+        remaining -= apply_count
+        if remaining <= 0:
+            break
+
+    # Save stego video
+    _save_video_frames_rgb(out_path, (frames[j] for j in range(len(frames))), fps=meta["fps"])
+
+
+def do_extract_video(stego_path: str, out_payload_path: str, key: str, lsb: int, frame_step: int = 10):
+    """Extract payload from a losslessly-encoded stego video produced by do_embed_video."""
+    if lsb < 1 or lsb > 8:
+        raise ValueError("lsb must be 1..8 for video as well")
+
+    frames, meta = _iter_video_frames(stego_path)
+    if not frames:
+        raise ValueError("No frames found in video")
+
+    frame_shapes = [f.shape for f in frames]
+    seed = seed_from_key(key)
+
+    selected_frames, per_frame_idx, global_perm, total_slots = _video_traversal_indices_for_frames(
+        frame_shapes, lsb, seed, frame_step
+    )
+
+    # First read header
+    hdr_bits_needed = HEADER_BYTES * 8
+    slots_for_hdr = (hdr_bits_needed + lsb - 1) // lsb
+
+    if slots_for_hdr > total_slots:
+        raise ValueError("Not enough capacity to read header from selected frames")
+
+    def _read_slots(n_slots: int) -> np.ndarray:
+        vals = np.zeros(n_slots, dtype=np.uint16)
+        taken = 0
+        cursor = 0
+        per_frame_sizes = [idx.size for idx in per_frame_idx]
+        cum_sizes = np.cumsum([0] + per_frame_sizes)
+        for i, frame_number in enumerate(selected_frames):
+            if taken >= n_slots:
+                break
+            start_global = cum_sizes[i]
+            end_global = cum_sizes[i + 1]
+            in_frame_mask = (global_perm < end_global) & (global_perm >= start_global)
+            picks = global_perm[in_frame_mask] - start_global
+            if picks.size == 0:
+                continue
+            # Respect remaining
+            apply_count = min(picks.size, n_slots - taken)
+            flat_indices = per_frame_idx[i][picks[:apply_count]].astype(np.int64)
+            frame = frames[frame_number]
+            flat = frame.reshape(-1)
+            vals[cursor : cursor + apply_count] = (flat[flat_indices] & ((1 << lsb) - 1)).astype(np.uint16)
+            cursor += apply_count
+            taken += apply_count
+        return vals
+
+    vals_hdr = _read_slots(slots_for_hdr)
+    hdr_bits = unpack_stream_from_lsb(vals_hdr, hdr_bits_needed, lsb)
+    hdr = Header.unpack(bits_to_bytes(hdr_bits))
+
+    if hdr.cover_type != COV_VIDEO or hdr.lsb_count != lsb:
+        raise ValueError("Wrong key/cover/lsb settings (header mismatch).")
+
+    total_payload_bits = hdr.payload_len * 8
+    slots_for_payload = (total_payload_bits + lsb - 1) // lsb
+
+    vals_pl = _read_slots(slots_for_hdr + slots_for_payload)[slots_for_hdr:]
+    pay_bits = unpack_stream_from_lsb(vals_pl, total_payload_bits, lsb)
+    payload = bits_to_bytes(pay_bits)
+
+    if hashlib.sha256(payload).digest() != hdr.payload_sha256:
+        raise ValueError("Integrity check failed (wrong key or corrupted stego).")
+
+    open(out_payload_path, "wb").write(payload)
+    print(f"Extracted {len(payload)} bytes from video -> {out_payload_path}")
