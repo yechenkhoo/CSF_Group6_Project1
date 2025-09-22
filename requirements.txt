@@ -1,5 +1,13 @@
+# Python dependencies for CSF Steganography Tool
 pillow
 numpy
 streamlit
 matplotlib
 imageio[ffmpeg]
+ffmpeg-python
+
+# Note: FFmpeg must also be installed on your system for full video stream functionality
+# macOS: brew install ffmpeg
+# Windows: choco install ffmpeg  
+# Linux: sudo apt install ffmpeg
+# Without FFmpeg, stream-based video embedding will fall back to frame-based mode

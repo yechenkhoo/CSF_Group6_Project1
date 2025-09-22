@@ -16,6 +16,13 @@ from main import (
     do_extract_image_region,
     do_embed_audio_region,
     do_extract_audio_region,
+    do_embed_video_stream,
+    do_extract_video_stream,
+    _get_video_stream_info,
+    _load_video_stream_data,
+    do_embed_video,
+    do_extract_video,
+    _iter_video_frames,
 )
 
 SUPPORTED_IMAGE_EXTS = {".png", ".bmp"}
@@ -204,6 +211,150 @@ def show_audio_time_preview(audio_path, time_range):
         return None
 
 
+def show_video_frame_comparison(original_path, stego_path, frame_indices=None, lsb=2):
+    """Show before/after comparison of video frames with difference highlighting"""
+    try:
+        # Load frames from both videos
+        orig_frames, orig_meta = _iter_video_frames(original_path)
+        stego_frames, stego_meta = _iter_video_frames(stego_path)
+        
+        if not orig_frames or not stego_frames:
+            return None
+            
+        # Select frames to compare (default: first, middle, last few frames)
+        n_frames = min(len(orig_frames), len(stego_frames))
+        if frame_indices is None:
+            if n_frames >= 10:
+                frame_indices = [0, n_frames//4, n_frames//2, 3*n_frames//4, n_frames-1]
+            else:
+                frame_indices = [0, n_frames//2, n_frames-1] if n_frames >= 3 else [0]
+        
+        # Limit number of frames for display
+        frame_indices = frame_indices[:4]  # Max 4 frames
+        
+        # Create comparison figure
+        fig, axes = plt.subplots(3, len(frame_indices), figsize=(4*len(frame_indices), 10))
+        if len(frame_indices) == 1:
+            axes = axes.reshape(3, 1)
+            
+        for i, frame_idx in enumerate(frame_indices):
+            if frame_idx >= n_frames:
+                continue
+                
+            orig_frame = orig_frames[frame_idx]
+            stego_frame = stego_frames[frame_idx]
+            
+            # Original frame
+            axes[0, i].imshow(orig_frame)
+            axes[0, i].set_title(f'Original Frame {frame_idx}', fontsize=10)
+            axes[0, i].axis('off')
+            
+            # Stego frame
+            axes[1, i].imshow(stego_frame)
+            axes[1, i].set_title(f'Stego Frame {frame_idx}', fontsize=10)
+            axes[1, i].axis('off')
+            
+            # Difference (LSB changes amplified)
+            diff = np.abs(stego_frame.astype(np.float32) - orig_frame.astype(np.float32))
+            
+            # Amplify LSB differences for visibility
+            lsb_mask = (1 << lsb) - 1
+            scale_factor = max(1, 255 // max(1, lsb_mask))  # Avoid division by zero
+            diff_masked = diff * scale_factor
+            diff_masked = np.clip(diff_masked, 0, 255).astype(np.uint8)
+            
+            axes[2, i].imshow(diff_masked, cmap='hot')
+            axes[2, i].set_title(f'Differences (×{scale_factor}) Frame {frame_idx}', fontsize=10)
+            axes[2, i].axis('off')
+        
+        plt.tight_layout()
+        return fig
+        
+    except Exception as e:
+        st.error(f"Could not generate video comparison: {e}")
+        return None
+
+
+def show_video_stream_analysis(video_path, stream_type, stream_index, lsb=2):
+    """Show analysis of video stream data for embedding visualization"""
+    try:
+        # Get stream info
+        streams = _get_video_stream_info(video_path)
+        
+        # Load raw stream data (first portion for visualization)
+        raw_data = _load_video_stream_data(video_path, stream_type, stream_index)
+        if len(raw_data) == 0:
+            return None
+            
+        # Limit data size for visualization
+        max_samples = 50000
+        if len(raw_data) > max_samples:
+            if stream_type == 'video':
+                # For video, take samples from beginning
+                viz_data = raw_data[:max_samples]
+            else:
+                # For audio, take evenly spaced samples
+                step = len(raw_data) // max_samples
+                viz_data = raw_data[::step][:max_samples]
+        else:
+            viz_data = raw_data
+            
+        if stream_type == 'video':
+            # Convert to uint8 array for video data
+            data_array = np.frombuffer(viz_data, dtype=np.uint8)
+            title = f"Video Stream {stream_index} RGB Data"
+            ylabel = "RGB Value (0-255)"
+        else:
+            # Convert to int16 array for audio data  
+            data_array = np.frombuffer(viz_data, dtype=np.int16)
+            title = f"Audio Stream {stream_index} Samples"
+            ylabel = "Amplitude"
+        
+        # Create visualization
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 6))
+        
+        # Plot 1: Data distribution (first 5000 samples)
+        sample_count = min(len(data_array), 5000)
+        sample_indices = np.arange(sample_count)
+        ax1.plot(sample_indices, data_array[:sample_count], alpha=0.7, linewidth=0.5)
+        ax1.set_title(f"{title} (First {sample_count:,} samples)")
+        ax1.set_xlabel("Sample Index")
+        ax1.set_ylabel(ylabel)
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot 2: LSB distribution analysis
+        if stream_type == 'video':
+            lsb_values = data_array & ((1 << lsb) - 1)
+        else:
+            lsb_values = data_array.view(np.uint16) & ((1 << lsb) - 1)
+            
+        bins = min(32, (1 << lsb))
+        ax2.hist(lsb_values, bins=bins, alpha=0.7, edgecolor='black', color='orange')
+        ax2.set_title(f"LSB Distribution Analysis (using {lsb} LSBs)")
+        ax2.set_xlabel(f"LSB Value (0-{(1 << lsb) - 1})")
+        ax2.set_ylabel("Frequency")
+        ax2.grid(True, alpha=0.3)
+        
+        # Add stream information as subtitle
+        if stream_type == 'video' and streams.get('video'):
+            stream_info = streams['video'][stream_index] if stream_index < len(streams['video']) else None
+            if stream_info:
+                info_text = f"Codec: {stream_info['codec']} | Resolution: {stream_info['width']}×{stream_info['height']} | FPS: {stream_info['fps']:.1f}"
+                fig.suptitle(f"Video Stream Analysis\n{info_text}", fontsize=12)
+        elif stream_type == 'audio' and streams.get('audio'):
+            stream_info = streams['audio'][stream_index] if stream_index < len(streams['audio']) else None
+            if stream_info:
+                info_text = f"Codec: {stream_info['codec']} | Sample Rate: {stream_info['sample_rate']}Hz | Channels: {stream_info['channels']}"
+                fig.suptitle(f"Audio Stream Analysis\n{info_text}", fontsize=12)
+        
+        plt.tight_layout()
+        return fig
+        
+    except Exception as e:
+        st.error(f"Could not generate stream analysis: {e}")
+        return None
+
+
 def encode_ui():
     st.subheader("Encode: Hide a payload inside a cover")
     c1, c2 = st.columns(2)
@@ -301,15 +452,87 @@ def encode_ui():
                     st.warning(f"Time range capacity calculation failed: {e}")
         elif cover_up is not None and (cover_up.type.startswith("video/") or os.path.splitext(cover_up.name)[1].lower() in SUPPORTED_VIDEO_EXTS):
             st.video(cover_up)
-            frame_step = st.number_input(
-                "Every Nth frame for video (must match on decode)",
-                min_value=1,
-                max_value=1000,
-                value=10,
-                step=1,
-                key="vid_step_preview",
+            
+            # Video embedding method selection
+            video_method = st.radio(
+                "Video embedding method:",
+                ["Frame-based", "Stream-based"],
+                key="video_method"
             )
-            st.caption("Choose .mp4 as output. Keep frame step consistent for decoding.")
+            
+            if video_method == "Frame-based":
+                frame_step = st.number_input(
+                    "Every Nth frame for video (must match on decode)",
+                    min_value=1,
+                    max_value=1000,
+                    value=10,
+                    step=1,
+                    key="vid_step_preview",
+                )
+                st.caption("Choose .mp4 as output. Keep frame step consistent for decoding.")
+            else:
+                # Stream-based embedding options
+                st.subheader("Stream Selection")
+                
+                # Get video stream info
+                try:
+                    cov_ext = os.path.splitext(cover_up.name)[1].lower()
+                    temp_video_path = _save_to_tmp(cover_up, suffix=cov_ext)
+                    
+                    from main import _get_video_stream_info
+                    stream_info = _get_video_stream_info(temp_video_path)
+                    
+                    # Display available streams
+                    if stream_info['video']:
+                        st.write("**Available Video Streams:**")
+                        for i, stream in enumerate(stream_info['video']):
+                            st.write(f"Stream {i}: {stream['codec']} ({stream['width']}x{stream['height']}, {stream['fps']:.1f} fps)")
+                    
+                    if stream_info['audio']:
+                        st.write("**Available Audio Streams:**")
+                        for i, stream in enumerate(stream_info['audio']):
+                            st.write(f"Stream {i}: {stream['codec']} ({stream['channels']} channels, {stream['sample_rate']} Hz)")
+                    
+                    # Stream selection
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        stream_type = st.selectbox(
+                            "Stream type:",
+                            ["video", "audio"],
+                            key="stream_type_encode"
+                        )
+                    
+                    with col2:
+                        if stream_type == "video" and stream_info['video']:
+                            max_video_idx = len(stream_info['video']) - 1
+                            stream_index = st.number_input(
+                                "Video stream index:",
+                                min_value=0,
+                                max_value=max_video_idx,
+                                value=0,
+                                key="video_stream_idx_encode"
+                            )
+                        elif stream_type == "audio" and stream_info['audio']:
+                            max_audio_idx = len(stream_info['audio']) - 1
+                            stream_index = st.number_input(
+                                "Audio stream index:",
+                                min_value=0,
+                                max_value=max_audio_idx,
+                                value=0,
+                                key="audio_stream_idx_encode"
+                            )
+                        else:
+                            stream_index = 0
+                            st.warning(f"No {stream_type} streams found")
+                    
+                    st.caption("Stream-based embedding hides payload within raw stream data.")
+                    
+                except Exception as e:
+                    st.warning(f"Could not analyze video streams: {e}")
+                    # Fallback defaults
+                    stream_type = "video"
+                    stream_index = 0
 
     if go:
         if not key:
@@ -410,91 +633,238 @@ def encode_ui():
                             file_name=os.path.basename(out_path),
                         )
                 elif cov_ext in SUPPORTED_VIDEO_EXTS and ext_choice == ".mp4":
-                    from main import do_embed_video, _iter_video_frames
-                    frame_step_val = int(st.session_state.get("vid_step_preview", 10))
+                    # Check which video method was selected
+                    selected_method = st.session_state.get("video_method", "Frame-based (existing)")
                     
-                    # Load original frames for comparison
-                    try:
-                        original_frames, orig_meta = _iter_video_frames(cover_path)
-                    except Exception as e:
-                        st.error(f"Failed to load original video frames: {e}")
-                        st.stop()
-                    
-                    do_embed_video(cover_path, payload_path, out_path, key, lsb, frame_step_val)
-                    st.success("Embedded into video stego")
-                    
-                    # Load stego frames for comparison
-                    try:
-                        stego_frames, stego_meta = _iter_video_frames(out_path)
-                    except Exception as e:
-                        st.warning(f"Could not load stego frames for visualization: {e}")
-                        stego_frames = None
-                    
-                    # Show video diff visualization
-                    if stego_frames is not None:
-                        st.subheader("Video Steganography Analysis")
+                    if selected_method == "Frame-based (existing)":
+                        # Original frame-based embedding
+
+                        frame_step_val = int(st.session_state.get("vid_step_preview", 10))
                         
-                        # Calculate which frames were modified
-                        selected_frames = list(range(0, len(original_frames), max(1, frame_step_val)))
-                        st.info(f"Modified {len(selected_frames)} out of {len(original_frames)} frames (every {frame_step_val} frames)")
+                        # Load original frames for comparison
+                        try:
+                            original_frames, orig_meta = _iter_video_frames(cover_path)
+                        except Exception as e:
+                            st.error(f"Failed to load original video frames: {e}")
+                            st.stop()
                         
-                        # Show sample frames comparison
-                        st.subheader("Frame Comparison")
-                        num_samples = min(3, len(selected_frames))
-                        sample_indices = selected_frames[:num_samples] if len(selected_frames) >= num_samples else selected_frames
+                        do_embed_video(cover_path, payload_path, out_path, key, lsb, frame_step_val)
                         
-                        for i, frame_idx in enumerate(sample_indices):
-                            st.write(f"**Frame {frame_idx}:**")
-                            col1, col2, col3 = st.columns(3)
+                        # Get file sizes for display
+                        original_size = os.path.getsize(cover_path)
+                        stego_size = os.path.getsize(out_path)
+                        payload_size = os.path.getsize(payload_path)
+                        size_change = stego_size - original_size
+                        size_change_pct = (size_change / original_size * 100) if original_size > 0 else 0
+                        
+                        st.success("Embedded into video stego (frame-based)")
+                        
+                        # Show file size comparison
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Original File", f"{original_size:,} bytes")
+                        with col2:
+                            st.metric("Stego File", f"{stego_size:,} bytes", f"{size_change:+,} bytes")
+                        with col3:
+                            st.metric("Payload Size", f"{payload_size:,} bytes")
+                        
+                        if size_change_pct != 0:
+                            if abs(size_change_pct) < 0.01:
+                                st.success(f"Size change: {size_change:+,} bytes (<0.01%)")
+                            else:
+                                st.success(f"Size change: {size_change:+,} bytes ({size_change_pct:+.2f}%)")
+                        else:
+                            st.success("No size change detected")
+                        
+                        # Load stego frames for comparison
+                        try:
+                            stego_frames, stego_meta = _iter_video_frames(out_path)
+                        except Exception as e:
+                            st.warning(f"Could not load stego frames for visualization: {e}")
+                            stego_frames = None
+                        
+                        # Show video diff visualization
+                        if stego_frames is not None:
+                            st.subheader("Video Steganography Analysis")
                             
-                            with col1:
-                                st.image(original_frames[frame_idx], caption=f"Original Frame {frame_idx}", use_container_width=True)
+                            # Calculate which frames were modified
+                            selected_frames = list(range(0, len(original_frames), max(1, frame_step_val)))
+                            st.info(f"Modified {len(selected_frames)} out of {len(original_frames)} frames (every {frame_step_val} frames)")
                             
-                            with col2:
-                                st.image(stego_frames[frame_idx], caption=f"Stego Frame {frame_idx}", use_container_width=True)
+                            # Show sample frames comparison
+                            st.subheader("Frame Comparison")
+                            num_samples = min(3, len(selected_frames))
+                            sample_indices = selected_frames[:num_samples] if len(selected_frames) >= num_samples else selected_frames
                             
-                            with col3:
-                                # Calculate LSB difference
-                                orig_frame = original_frames[frame_idx]
-                                stego_frame = stego_frames[frame_idx]
+                            for i, frame_idx in enumerate(sample_indices):
+                                st.write(f"**Frame {frame_idx}:**")
+                                col1, col2, col3 = st.columns(3)
                                 
-                                # Compute difference in LSBs
-                                diff = (stego_frame ^ orig_frame) & ((1 << lsb) - 1)
+                                with col1:
+                                    st.image(original_frames[frame_idx], caption=f"Original Frame {frame_idx}", use_container_width=True)
                                 
-                                # Amplify to make visible
-                                scale = 255 // ((1 << lsb) - 1) if lsb < 8 else 1
-                                diff_vis = (diff * scale).astype(np.uint8)
+                                with col2:
+                                    st.image(stego_frames[frame_idx], caption=f"Stego Frame {frame_idx}", use_container_width=True)
                                 
-                                st.image(diff_vis, caption=f"LSB Differences (x{scale})", use_container_width=True)
-                        
-                        # Show modified frames grid
-                        if len(selected_frames) > 3:
-                            st.subheader("All Modified Frames (Thumbnails)")
-                            cols_per_row = 6
-                            rows = (len(selected_frames) + cols_per_row - 1) // cols_per_row
+                                with col3:
+                                    # Calculate LSB difference
+                                    orig_frame = original_frames[frame_idx]
+                                    stego_frame = stego_frames[frame_idx]
+                                    
+                                    # Compute difference in LSBs
+                                    diff = (stego_frame ^ orig_frame) & ((1 << lsb) - 1)
+                                    
+                                    # Amplify to make visible
+                                    scale = 255 // ((1 << lsb) - 1) if lsb < 8 else 1
+                                    diff_vis = (diff * scale).astype(np.uint8)
+                                    
+                                    st.image(diff_vis, caption=f"LSB Differences (x{scale})", use_container_width=True)
                             
-                            for row in range(min(3, rows)):  # Show max 3 rows
-                                cols = st.columns(cols_per_row)
-                                for col_idx in range(cols_per_row):
-                                    frame_idx_in_list = row * cols_per_row + col_idx
-                                    if frame_idx_in_list < len(selected_frames):
-                                        frame_num = selected_frames[frame_idx_in_list]
-                                        with cols[col_idx]:
-                                            # Show difference thumbnail
-                                            orig_frame = original_frames[frame_num]
-                                            stego_frame = stego_frames[frame_num]
-                                            diff = (stego_frame ^ orig_frame) & ((1 << lsb) - 1)
-                                            scale = 255 // ((1 << lsb) - 1) if lsb < 8 else 1
-                                            diff_vis = (diff * scale).astype(np.uint8)
-                                            st.image(diff_vis, caption=f"F{frame_num}", use_container_width=True)
+                            # Show modified frames grid
+                            if len(selected_frames) > 3:
+                                st.subheader("All Modified Frames (Thumbnails)")
+                                cols_per_row = 6
+                                rows = (len(selected_frames) + cols_per_row - 1) // cols_per_row
+                                
+                                for row in range(min(3, rows)):  # Show max 3 rows
+                                    cols = st.columns(cols_per_row)
+                                    for col_idx in range(cols_per_row):
+                                        frame_idx_in_list = row * cols_per_row + col_idx
+                                        if frame_idx_in_list < len(selected_frames):
+                                            frame_num = selected_frames[frame_idx_in_list]
+                                            with cols[col_idx]:
+                                                # Show difference thumbnail
+                                                orig_frame = original_frames[frame_num]
+                                                stego_frame = stego_frames[frame_num]
+                                                diff = (stego_frame ^ orig_frame) & ((1 << lsb) - 1)
+                                                scale = 255 // ((1 << lsb) - 1) if lsb < 8 else 1
+                                                diff_vis = (diff * scale).astype(np.uint8)
+                                                st.image(diff_vis, caption=f"F{frame_num}", use_container_width=True)
+                                
+                                if len(selected_frames) > rows * cols_per_row:
+                                    st.caption(f"... and {len(selected_frames) - rows * cols_per_row} more modified frames")
                             
-                            if len(selected_frames) > rows * cols_per_row:
-                                st.caption(f"... and {len(selected_frames) - rows * cols_per_row} more modified frames")
-                        
-                        st.info("Note: Stego video uses lossless codec. Preview may not work in all browsers. Download for local playback.")
+                            st.info("Note: Stego video uses lossless codec. Preview may not work in all browsers. Download for local playback.")
+                        else:
+                            st.info("Video embedded successfully, but frame comparison visualization is not available.")
+                    
                     else:
-                        st.info("Video embedded successfully, but frame comparison visualization is not available.")
+                        # New stream-based embedding
+                        from main import do_embed_video_stream
+                        
+                        # Get stream parameters
+                        embed_stream_type = st.session_state.get("stream_type_encode", "video")
+                        if embed_stream_type == "video":
+                            embed_stream_index = int(st.session_state.get("video_stream_idx_encode", 0))
+                        else:
+                            embed_stream_index = int(st.session_state.get("audio_stream_idx_encode", 0))
+                        
+                        try:
+                            do_embed_video_stream(cover_path, payload_path, out_path, key, lsb, 
+                                                embed_stream_type, embed_stream_index)
+                        except RuntimeError as e:
+                            if "FFmpeg not found" in str(e):
+                                st.warning("⚠️ FFmpeg not found. Falling back to frame-based embedding...")
+                                st.info("To use stream-based embedding, please install FFmpeg:\n" +
+                                       "- macOS: `brew install ffmpeg`\n" + 
+                                       "- Windows: `choco install ffmpeg`\n" +
+                                       "- Linux: `sudo apt install ffmpeg`")
+                                # Fall back to frame-based embedding
+                                do_embed_video(cover_path, payload_path, out_path, key, lsb, 10)
+                                embed_stream_type = "frames"
+                                embed_stream_index = "N/A"
+                            else:
+                                raise e
+                        
+                        # Get file sizes for display
+                        original_size = os.path.getsize(cover_path)
+                        stego_size = os.path.getsize(out_path)
+                        payload_size = os.path.getsize(payload_path)
+                        size_change = stego_size - original_size
+                        size_change_pct = (size_change / original_size * 100) if original_size > 0 else 0
+                        
+                        st.success(f"Embedded into video stego ({embed_stream_type} stream {embed_stream_index})")
+                        
+                        st.subheader("Stream-based Steganography Analysis")
+                        st.info(f"Payload hidden in {embed_stream_type} stream {embed_stream_index} using {lsb} LSB(s)")
+                        
+                        # Show file size comparison
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Original File", f"{original_size:,} bytes")
+                        with col2:
+                            st.metric("Stego File", f"{stego_size:,} bytes", f"{size_change:+,} bytes")
+                        with col3:
+                            st.metric("Payload Size", f"{payload_size:,} bytes")
+                        
+                        if size_change_pct != 0:
+                            if abs(size_change_pct) < 0.01:
+                                st.success(f"📊 Size change: {size_change:+,} bytes (<0.01%)")
+                            else:
+                                st.success(f"📊 Size change: {size_change:+,} bytes ({size_change_pct:+.2f}%)")
+                        else:
+                            st.success("📊 No size change detected")
+                        
+                        st.write("Stream-based embedding modifies the raw stream data directly, making it more robust against certain types of analysis.")
+                        
+                        # Show stream information if available
+                        try:
+                            streams = _get_video_stream_info(cover_path)
+                            if embed_stream_type == "video" and streams.get("video"):
+                                stream_info = streams["video"][embed_stream_index] if embed_stream_index < len(streams["video"]) else None
+                                if stream_info:
+                                    st.write(f"**Stream Details:** {stream_info['codec']} codec, {stream_info['width']}×{stream_info['height']} @ {stream_info['fps']:.1f}fps")
+                            elif embed_stream_type == "audio" and streams.get("audio"):
+                                stream_info = streams["audio"][embed_stream_index] if embed_stream_index < len(streams["audio"]) else None
+                                if stream_info:
+                                    st.write(f"**Stream Details:** {stream_info['codec']} codec, {stream_info['sample_rate']}Hz, {stream_info['channels']} channels")
+                        except Exception:
+                            pass  # If stream info fails, continue without it
+                        
+                        # Visual Analysis Section
+                        st.subheader("Visual Analysis")
+                        
+                        # Stream analysis visualization
+                        with st.expander("Stream Data Analysis", expanded=True):
+                            try:
+                                stream_fig = show_video_stream_analysis(cover_path, embed_stream_type, embed_stream_index, lsb)
+                                if stream_fig:
+                                    st.pyplot(stream_fig)
+                                    plt.close(stream_fig)
+                            except Exception as e:
+                                st.warning(f"Could not generate stream analysis: {e}")
+                        
+                        # Frame comparison for video streams
+                        if embed_stream_type == "video":
+                            with st.expander("Frame-by-Frame Comparison", expanded=False):
+                                try:
+                                    comparison_fig = show_video_frame_comparison(cover_path, out_path, lsb=lsb)
+                                    if comparison_fig:
+                                        st.pyplot(comparison_fig)
+                                        plt.close(comparison_fig)
+                                        st.caption("Red/bright areas in difference images show where data was embedded")
+                                except Exception as e:
+                                    st.warning(f"Could not generate frame comparison: {e}")
+                        
+                        # Audio waveform comparison for audio streams
+                        elif embed_stream_type == "audio":
+                            with st.expander("Audio Waveform Analysis", expanded=False):
+                                try:
+                                    # Show original audio preview
+                                    st.write("**Original Audio:**")
+                                    with open(cover_path, "rb") as f:
+                                        st.audio(f.read())
+                                    
+                                    # Show stego audio preview
+                                    st.write("**Stego Audio:**")
+                                    with open(out_path, "rb") as f:
+                                        st.audio(f.read())
+                                    
+                                    st.caption("Listen for any audible differences (there should be none with proper LSB embedding)")
+                                except Exception as e:
+                                    st.warning(f"Could not generate audio comparison: {e}")
                     
+                    # Common download section for both methods
                     with open(out_path, "rb") as f:
                         st.download_button(
                             "Download stego video",
@@ -560,14 +930,86 @@ def decode_ui():
                     plt.close(waveform_fig)
         elif stego_up is not None and (stego_up.type.startswith("video/") or os.path.splitext(stego_up.name)[1].lower() in SUPPORTED_VIDEO_EXTS):
             st.video(stego_up)
-            frame_step = st.number_input(
-                "Every Nth frame for video (must match encode)",
-                min_value=1,
-                max_value=1000,
-                value=10,
-                step=1,
-                key="vid_step_preview_decode",
+            
+            # Video decoding method selection  
+            decode_method = st.radio(
+                "Video decoding method (must match encoding):",
+                ["Frame-based", "Stream-based"],
+                key="video_decode_method"
             )
+            
+            if decode_method == "Frame-based":
+                frame_step = st.number_input(
+                    "Every Nth frame for video (must match encode)",
+                    min_value=1,
+                    max_value=1000,
+                    value=10,
+                    step=1,
+                    key="vid_step_preview_decode",
+                )
+            else:
+                # Stream-based decoding options
+                st.subheader("Stream Selection (must match encoding)")
+                
+                # Get video stream info
+                try:
+                    stego_ext = os.path.splitext(stego_up.name)[1].lower()
+                    temp_stego_path = _save_to_tmp(stego_up, suffix=stego_ext)
+                    
+                    from main import _get_video_stream_info
+                    stream_info = _get_video_stream_info(temp_stego_path)
+                    
+                    # Display available streams
+                    if stream_info['video']:
+                        st.write("**Available Video Streams:**")
+                        for i, stream in enumerate(stream_info['video']):
+                            st.write(f"Stream {i}: {stream['codec']} ({stream['width']}x{stream['height']}, {stream['fps']:.1f} fps)")
+                    
+                    if stream_info['audio']:
+                        st.write("**Available Audio Streams:**")
+                        for i, stream in enumerate(stream_info['audio']):
+                            st.write(f"Stream {i}: {stream['codec']} ({stream['channels']} channels, {stream['sample_rate']} Hz)")
+                    
+                    # Stream selection
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        decode_stream_type = st.selectbox(
+                            "Stream type:",
+                            ["video", "audio"],
+                            key="stream_type_decode"
+                        )
+                    
+                    with col2:
+                        if decode_stream_type == "video" and stream_info['video']:
+                            max_video_idx = len(stream_info['video']) - 1
+                            decode_stream_index = st.number_input(
+                                "Video stream index:",
+                                min_value=0,
+                                max_value=max_video_idx,
+                                value=0,
+                                key="video_stream_idx_decode"
+                            )
+                        elif decode_stream_type == "audio" and stream_info['audio']:
+                            max_audio_idx = len(stream_info['audio']) - 1
+                            decode_stream_index = st.number_input(
+                                "Audio stream index:",
+                                min_value=0,
+                                max_value=max_audio_idx,
+                                value=0,
+                                key="audio_stream_idx_decode"
+                            )
+                        else:
+                            decode_stream_index = 0
+                            st.warning(f"No {decode_stream_type} streams found")
+                    
+                    st.caption("Stream selection must match what was used during encoding.")
+                    
+                except Exception as e:
+                    st.warning(f"Could not analyze video streams: {e}")
+                    # Fallback defaults
+                    decode_stream_type = "video"
+                    decode_stream_index = 0
 
     if go2:
         if not key:
@@ -601,44 +1043,70 @@ def decode_ui():
                         do_extract_audio(stego_path, out_path, key, lsb)
                         st.success("Extracted payload from audio")
                 elif stego_ext in SUPPORTED_VIDEO_EXTS:
-                    from main import do_extract_video
-                    step_val = int(st.session_state.get("vid_step_preview_decode", 10))
+                    # Check which video method was selected for decoding
+                    selected_decode_method = st.session_state.get("video_decode_method", "Frame-based (existing)")
+                    
                     with st.spinner("Decoding video payload..."):
-                        try:
-                            do_extract_video(stego_path, out_path, key, lsb, step_val)
-                            st.success("Extracted payload from video")
-                        except Exception as e:
-                            if "Bad magic" in str(e) or "Bad magic" in getattr(e, "args", [""])[0]:
-                                step_candidates = [step_val] + [1, 2, 3, 5, 10, 15, 20, 24, 25, 30]
-                                lsb_candidates = [lsb] + [i for i in range(1, 9) if i != lsb]
-                                tried = set()
-                                found = None
-                                for lsb_try in lsb_candidates:
-                                    for step_try in step_candidates:
-                                        key_t = (lsb_try, step_try)
-                                        if key_t in tried:
-                                            continue
-                                        tried.add(key_t)
-                                        try:
-                                            do_extract_video(stego_path, out_path, key, int(lsb_try), int(step_try))
-                                            found = (lsb_try, step_try)
-                                            break
-                                        except Exception as e2:
-                                            if "Bad magic" in str(e2) or "Bad magic" in getattr(e2, "args", [""])[0]:
+                        if selected_decode_method == "Frame-based (existing)":
+                            # Original frame-based extraction
+                            from main import do_extract_video
+                            step_val = int(st.session_state.get("vid_step_preview_decode", 10))
+                            
+                            try:
+                                do_extract_video(stego_path, out_path, key, lsb, step_val)
+                                st.success("Extracted payload from video (frame-based)")
+                            except Exception as e:
+                                if "Bad magic" in str(e) or "Bad magic" in getattr(e, "args", [""])[0]:
+                                    step_candidates = [step_val] + [1, 2, 3, 5, 10, 15, 20, 24, 25, 30]
+                                    lsb_candidates = [lsb] + [i for i in range(1, 9) if i != lsb]
+                                    tried = set()
+                                    found = None
+                                    for lsb_try in lsb_candidates:
+                                        for step_try in step_candidates:
+                                            key_t = (lsb_try, step_try)
+                                            if key_t in tried:
                                                 continue
-                                            else:
-                                                # some other error; surface it
-                                                raise
+                                            tried.add(key_t)
+                                            try:
+                                                do_extract_video(stego_path, out_path, key, int(lsb_try), int(step_try))
+                                                found = (lsb_try, step_try)
+                                                break
+                                            except Exception as e2:
+                                                if "Bad magic" in str(e2) or "Bad magic" in getattr(e2, "args", [""])[0]:
+                                                    continue
+                                                else:
+                                                    # some other error; surface it
+                                                    raise
+                                        if found:
+                                            break
                                     if found:
-                                        break
-                                if found:
-                                    st.info(f"Auto-detected settings: LSB={found[0]}, frame step={found[1]}")
-                                    st.success("Extracted payload from video")
+                                        st.info(f"Auto-detected settings: LSB={found[0]}, frame step={found[1]}")
+                                        st.success("Extracted payload from video (frame-based)")
+                                    else:
+                                        st.error("Failed to extract from video. Possible causes: wrong key/LSB, wrong frame step, or the video was transcoded (lossy). Try re-embedding and extracting immediately with the same settings.")
+                                        st.stop()
                                 else:
-                                    st.error("Failed to extract from video. Possible causes: wrong key/LSB, wrong frame step, or the video was transcoded (lossy). Try re-embedding and extracting immediately with the same settings.")
-                                    st.stop()
+                                    raise
+                        
+                        else:
+                            # New stream-based extraction
+                            from main import do_extract_video_stream
+                            
+                            # Get stream parameters
+                            decode_stream_type = st.session_state.get("stream_type_decode", "video")
+                            if decode_stream_type == "video":
+                                decode_stream_index = int(st.session_state.get("video_stream_idx_decode", 0))
                             else:
-                                raise
+                                decode_stream_index = int(st.session_state.get("audio_stream_idx_decode", 0))
+                            
+                            try:
+                                do_extract_video_stream(stego_path, out_path, key, lsb, 
+                                                      decode_stream_type, decode_stream_index)
+                                st.success(f"Extracted payload from video ({decode_stream_type} stream {decode_stream_index})")
+                            except Exception as e:
+                                st.error(f"Failed to extract from {decode_stream_type} stream {decode_stream_index}: {e}")
+                                st.info("Ensure the stream type, index, and LSB settings match those used during encoding.")
+                                st.stop()
                 else:
                     st.error("Unsupported stego type")
                     st.stop()

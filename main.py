@@ -1,4 +1,4 @@
-import argparse, hashlib, struct, sys, wave, os
+import argparse, hashlib, struct, sys, wave, os, json, subprocess, tempfile
 from dataclasses import dataclass
 from typing import Tuple, Optional
 import numpy as np
@@ -542,6 +542,7 @@ def do_extract_audio_region(
     samples, n_ch, fr = load_wav_int16(stego_path)
     buf = samples.view(np.uint16)
     seed = seed_from_key(key)
+    idx = traversal_indices(buf.size, seed)
 
     # Get indices for extraction time range (must match embedding)
     if time_range:
@@ -642,6 +643,7 @@ except Exception as _e:
 
 # Define video cover type without touching existing constants
 COV_VIDEO = 2
+COV_VIDEO_STREAM = 3  # For specific video/audio stream embedding
 
 
 def _load_video_frames_rgb(video_path: str):
@@ -731,6 +733,240 @@ def _iter_video_frames(video_path: str):
     return cached, meta
 
 
+def _get_video_stream_info(video_path: str):
+    """Get information about available video and audio streams in the video file."""
+    if imageio is None:
+        raise RuntimeError("imageio is required for video stream analysis. Please install imageio[ffmpeg].")
+    
+    try:
+        # Use ffprobe to get detailed stream information
+        cmd = [
+            'ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_streams', video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        
+        if result.returncode != 0:
+            # Fallback if ffprobe fails
+            return {
+                'video': [{'index': 0, 'codec': 'unknown', 'width': 0, 'height': 0, 'fps': 30, 'bitrate': 'unknown'}],
+                'audio': []
+            }
+        
+        data = json.loads(result.stdout)
+        
+        streams = {
+            'video': [],
+            'audio': []
+        }
+        
+        video_count = 0
+        audio_count = 0
+        
+        for i, stream in enumerate(data.get('streams', [])):
+            codec_type = stream.get('codec_type', '')
+            codec_name = stream.get('codec_name', 'unknown')
+            
+            if codec_type == 'video':
+                # Calculate FPS more safely
+                try:
+                    fps_str = stream.get('r_frame_rate', '30/1')
+                    if '/' in fps_str:
+                        num, den = fps_str.split('/')
+                        fps = float(num) / float(den) if float(den) != 0 else 30.0
+                    else:
+                        fps = float(fps_str)
+                except:
+                    fps = 30.0
+                
+                streams['video'].append({
+                    'index': video_count,
+                    'actual_index': i,
+                    'codec': codec_name,
+                    'width': stream.get('width', 0),
+                    'height': stream.get('height', 0),
+                    'fps': fps,
+                    'bitrate': stream.get('bit_rate', 'unknown')
+                })
+                video_count += 1
+                
+            elif codec_type == 'audio':
+                streams['audio'].append({
+                    'index': audio_count,
+                    'actual_index': i,
+                    'codec': codec_name,
+                    'sample_rate': stream.get('sample_rate', 0),
+                    'channels': stream.get('channels', 0),
+                    'bitrate': stream.get('bit_rate', 'unknown')
+                })
+                audio_count += 1
+        
+        # Ensure we have at least one video stream entry for the UI
+        if not streams['video']:
+            streams['video'].append({
+                'index': 0, 'actual_index': 0, 'codec': 'unknown', 
+                'width': 0, 'height': 0, 'fps': 30, 'bitrate': 'unknown'
+            })
+        
+        return streams
+        
+    except (FileNotFoundError, json.JSONDecodeError, Exception):
+        # Fallback to basic info if anything fails
+        return {
+            'video': [{'index': 0, 'actual_index': 0, 'codec': 'unknown', 'width': 0, 'height': 0, 'fps': 30, 'bitrate': 'unknown'}],
+            'audio': []
+        }
+
+
+def _load_video_stream_data(video_path: str, stream_type: str, stream_index: int):
+    """Load raw data from a specific video or audio stream."""
+    if imageio is None:
+        raise RuntimeError("imageio is required for stream processing. Please install imageio[ffmpeg].")
+    
+    try:
+        # First, let's check what streams are actually available
+        probe_cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_streams', video_path]
+        try:
+            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+            probe_data = json.loads(probe_result.stdout)
+            streams = probe_data.get('streams', [])
+            
+            # Find the actual stream index based on type
+            target_streams = [i for i, s in enumerate(streams) if s.get('codec_type') == stream_type]
+            if not target_streams:
+                raise RuntimeError(f"No {stream_type} streams found in video")
+            if stream_index >= len(target_streams):
+                raise RuntimeError(f"{stream_type.capitalize()} stream {stream_index} not found. Available: 0-{len(target_streams)-1}")
+            
+            # Use the actual stream index from the file
+            actual_stream_idx = target_streams[stream_index]
+            
+        except (subprocess.CalledProcessError, json.JSONDecodeError):
+            # Fallback to simple stream index
+            actual_stream_idx = stream_index
+        
+        if stream_type == 'video':
+            # Extract raw video frames - use simpler mapping
+            cmd = [
+                'ffmpeg', '-v', 'error', '-i', video_path, 
+                '-map', f'0:{actual_stream_idx}', '-f', 'rawvideo', 
+                '-pix_fmt', 'rgb24', '-'
+            ]
+        elif stream_type == 'audio':
+            # Extract raw audio data - use simpler mapping
+            cmd = [
+                'ffmpeg', '-v', 'error', '-i', video_path,
+                '-map', f'0:{actual_stream_idx}', '-f', 's16le',
+                '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '2', '-'
+            ]
+        else:
+            raise ValueError(f"Unsupported stream type: {stream_type}")
+        
+        result = subprocess.run(cmd, capture_output=True, check=False)
+        
+        if result.returncode != 0:
+            error_msg = result.stderr.decode('utf-8', errors='ignore') if result.stderr else "Unknown error"
+            raise RuntimeError(f"FFmpeg failed to extract {stream_type} stream {stream_index}: {error_msg}")
+        
+        if len(result.stdout) == 0:
+            raise RuntimeError(f"No data extracted from {stream_type} stream {stream_index}")
+            
+        return result.stdout
+        
+    except FileNotFoundError:
+        raise RuntimeError("FFmpeg not found. Please install FFmpeg using:\n" +
+                         "  macOS: brew install ffmpeg\n" +
+                         "  Windows: choco install ffmpeg\n" +
+                         "  Linux: sudo apt install ffmpeg\n" +
+                         "Or use frame-based embedding instead of stream-based.")
+    except Exception as e:
+        raise RuntimeError(f"Failed to extract {stream_type} stream {stream_index} from {video_path}: {str(e)}")
+
+
+def _save_video_with_stream_data(input_path: str, output_path: str, stream_type: str, 
+                                stream_index: int, modified_data: bytes):
+    """Save video with modified stream data back to file."""
+    if imageio is None:
+        raise RuntimeError("imageio is required for stream processing. Please install imageio[ffmpeg].")
+    
+    try:
+        # For simplicity, let's use the existing frame-based approach but with the modified data
+        # This is more reliable than trying to replace individual streams
+        
+        if stream_type == 'video':
+            # For video streams, we'll reconstruct the entire video
+            # First, get video properties
+            probe_cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_streams', input_path]
+            try:
+                probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+                probe_data = json.loads(probe_result.stdout)
+                streams = probe_data.get('streams', [])
+                video_streams = [s for s in streams if s.get('codec_type') == 'video']
+                
+                if video_streams:
+                    width = video_streams[0].get('width', 640)
+                    height = video_streams[0].get('height', 480)
+                    fps = eval(video_streams[0].get('r_frame_rate', '30/1'))
+                else:
+                    width, height, fps = 640, 480, 30
+            except:
+                width, height, fps = 640, 480, 30
+            
+            # Save modified video data to temporary file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.rgb') as temp_file:
+                temp_file.write(modified_data)
+                temp_data_path = temp_file.name
+            
+            try:
+                # Create new video from raw RGB data
+                cmd = [
+                    'ffmpeg', '-v', 'error', '-y',
+                    '-f', 'rawvideo', '-pix_fmt', 'rgb24', 
+                    '-s', f'{width}x{height}', '-r', str(fps),
+                    '-i', temp_data_path,
+                    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18',
+                    '-pix_fmt', 'yuv420p',
+                    output_path
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, check=False)
+                if result.returncode != 0:
+                    error_msg = result.stderr.decode('utf-8', errors='ignore') if result.stderr else "Unknown error"
+                    raise RuntimeError(f"FFmpeg failed to create video: {error_msg}")
+                    
+            finally:
+                os.unlink(temp_data_path)
+                
+        elif stream_type == 'audio':
+            # For audio streams, create a new video with modified audio
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.raw') as temp_file:
+                temp_file.write(modified_data)
+                temp_data_path = temp_file.name
+            
+            try:
+                # Replace audio stream while keeping video
+                cmd = [
+                    'ffmpeg', '-v', 'error', '-y',
+                    '-i', input_path,
+                    '-f', 's16le', '-ar', '44100', '-ac', '2', '-i', temp_data_path,
+                    '-map', '0:v', '-map', '1:a', 
+                    '-c:v', 'copy', '-c:a', 'aac',
+                    output_path
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, check=False)
+                if result.returncode != 0:
+                    error_msg = result.stderr.decode('utf-8', errors='ignore') if result.stderr else "Unknown error"
+                    raise RuntimeError(f"FFmpeg failed to replace audio: {error_msg}")
+                    
+            finally:
+                os.unlink(temp_data_path)
+            
+    except FileNotFoundError:
+        raise RuntimeError("FFmpeg not found. Please install FFmpeg to use stream-based embedding.")
+    except Exception as e:
+        raise RuntimeError(f"Failed to save modified {stream_type} stream to {output_path}: {str(e)}")
+
+
 def do_embed_video(cover_path: str, payload_path: str, out_path: str, key: str, lsb: int, frame_step: int = 10):
     """Embed payload into a video by modifying LSBs of selected frames (every frame_step frames).
 
@@ -796,6 +1032,18 @@ def do_embed_video(cover_path: str, payload_path: str, out_path: str, key: str, 
 
     # Save stego video
     _save_video_frames_rgb(out_path, (frames[j] for j in range(len(frames))), fps=meta["fps"])
+    
+    # Get file sizes for comparison
+    original_size = os.path.getsize(cover_path)
+    stego_size = os.path.getsize(out_path)
+    size_change = stego_size - original_size
+    size_change_pct = (size_change / original_size * 100) if original_size > 0 else 0
+    
+    print(f"Embedded {len(payload)} bytes into video (frame-based) -> {out_path}")
+    print(f"Original file: {original_size:,} bytes")
+    print(f"Stego file: {stego_size:,} bytes") 
+    print(f"Size change: {size_change:+,} bytes ({size_change_pct:+.2f}%)")
+    print(f"Capacity used: {needed_slots}/{total_slots} slots ({needed_slots/total_slots*100:.2f}%)")
 
 
 def do_extract_video(stego_path: str, out_payload_path: str, key: str, lsb: int, frame_step: int = 10):
@@ -867,3 +1115,319 @@ def do_extract_video(stego_path: str, out_payload_path: str, key: str, lsb: int,
 
     open(out_payload_path, "wb").write(payload)
     print(f"Extracted {len(payload)} bytes from video -> {out_payload_path}")
+
+
+def do_embed_video_stream(cover_path: str, payload_path: str, out_path: str, key: str, 
+                         lsb: int, stream_type: str, stream_index: int = 0):
+    """Embed payload into a specific video or audio stream within a video file.
+    
+    Args:
+        cover_path: Input video file path
+        payload_path: Payload file to embed
+        out_path: Output video file path
+        key: Encryption key
+        lsb: Number of LSB bits to use
+        stream_type: 'video' or 'audio'
+        stream_index: Index of the stream (0-based)
+    """
+    if lsb < 1 or lsb > 8:
+        raise ValueError("lsb must be 1..8")
+    
+    if stream_type not in ['video', 'audio']:
+        raise ValueError("stream_type must be 'video' or 'audio'")
+
+    # For video streams, try the simplified approach first since FFmpeg stream manipulation can be complex
+    if stream_type == 'video':
+        try:
+            payload_size = _embed_in_video_frames_simple(cover_path, payload_path, out_path, key, lsb)
+            print(f"Embedded {payload_size} bytes into video frames -> {out_path}")
+            return
+        except Exception as e:
+            print(f"Simple video embedding failed: {e}")
+            # Fall through to try the original method
+    
+    # Try the original FFmpeg-based method
+    try:
+        # Load raw stream data
+        raw_data = _load_video_stream_data(cover_path, stream_type, stream_index)
+        if len(raw_data) == 0:
+            raise ValueError(f"No data found in {stream_type} stream {stream_index}")
+
+        # Convert to numpy array for processing
+        if stream_type == 'video':
+            # RGB video data (uint8)
+            data_array = np.frombuffer(raw_data, dtype=np.uint8)
+        else:
+            # Audio data (int16) - convert to uint16 for LSB operations
+            int16_data = np.frombuffer(raw_data, dtype=np.int16)
+            data_array = int16_data.view(np.uint16)
+
+        seed = seed_from_key(key)
+        idx = traversal_indices(data_array.size, seed)
+
+        payload = open(payload_path, "rb").read()
+        header = Header(MAGIC, VERSION, COV_VIDEO_STREAM, lsb, len(payload), hashlib.sha256(payload).digest())
+        header_bytes = header.pack()
+
+        # Build bitstream: header + payload
+        bits = np.concatenate([bytes_to_bits(header_bytes), bytes_to_bits(payload)])
+        chunks, needed_slots = pack_stream_for_lsb(bits, lsb)
+
+        # Check capacity
+        if needed_slots > data_array.size:
+            need = (needed_slots * lsb + 7) // 8
+            cap = (data_array.size * lsb) // 8
+            raise ValueError(f"Payload requires ~{need} bytes but {stream_type} stream capacity is {cap} bytes.")
+
+        # Embed data into LSBs
+        if stream_type == 'video':
+            mask = np.uint8(0xFF ^ ((1 << lsb) - 1))
+            target = data_array.copy()
+            sel = idx[:needed_slots].astype(np.int64)
+            target[sel] = (target[sel] & mask) | chunks.astype(np.uint8)
+            modified_data = target.tobytes()
+        else:
+            mask = np.uint16(0xFFFF ^ ((1 << lsb) - 1))
+            target = data_array.copy()
+            sel = idx[:needed_slots].astype(np.int64)
+            target[sel] = (target[sel] & mask) | chunks.astype(np.uint16)
+            # Convert back to int16 for audio
+            modified_data = target.view(np.int16).tobytes()
+
+        # Save video with modified stream
+        _save_video_with_stream_data(cover_path, out_path, stream_type, stream_index, modified_data)
+        
+        # Get file sizes for comparison
+        original_size = os.path.getsize(cover_path)
+        stego_size = os.path.getsize(out_path)
+        size_change = stego_size - original_size
+        size_change_pct = (size_change / original_size * 100) if original_size > 0 else 0
+        
+        print(f"Embedded {len(payload)} bytes into {stream_type} stream {stream_index} -> {out_path}")
+        print(f"Original file: {original_size:,} bytes")
+        print(f"Stego file: {stego_size:,} bytes") 
+        print(f"Size change: {size_change:+,} bytes ({size_change_pct:+.2f}%)")
+        print(f"Capacity used: {needed_slots}/{data_array.size} slots ({needed_slots/data_array.size*100:.2f}%)")
+        
+    except Exception as e:
+        if stream_type == 'video':
+            # If both methods fail for video, give a clear error message
+            raise RuntimeError(f"Failed to embed into video stream: {str(e)}. Consider using frame-based embedding instead.")
+        else:
+            # For audio, re-raise the original error
+            raise
+
+
+def do_extract_video_stream(stego_path: str, out_payload_path: str, key: str, 
+                           lsb: int, stream_type: str, stream_index: int = 0):
+    """Extract payload from a specific video or audio stream within a video file.
+    
+    Args:
+        stego_path: Input stego video file path
+        out_payload_path: Output file for extracted payload
+        key: Decryption key
+        lsb: Number of LSB bits used
+        stream_type: 'video' or 'audio'
+        stream_index: Index of the stream (0-based)
+    """
+    if lsb < 1 or lsb > 8:
+        raise ValueError("lsb must be 1..8")
+    
+    if stream_type not in ['video', 'audio']:
+        raise ValueError("stream_type must be 'video' or 'audio'")
+
+    # For video streams, try the simplified approach first
+    if stream_type == 'video':
+        try:
+            payload = _extract_from_video_frames_simple(stego_path, key, lsb)
+            open(out_payload_path, "wb").write(payload)
+            print(f"Extracted {len(payload)} bytes from video frames -> {out_payload_path}")
+            return
+        except Exception as e:
+            print(f"Simple video extraction failed: {e}")
+            # Fall through to try the original method
+
+    # Try the original FFmpeg-based method
+    try:
+        # Load raw stream data
+        raw_data = _load_video_stream_data(stego_path, stream_type, stream_index)
+        if len(raw_data) == 0:
+            raise ValueError(f"No data found in {stream_type} stream {stream_index}")
+
+        # Convert to numpy array for processing
+        if stream_type == 'video':
+            data_array = np.frombuffer(raw_data, dtype=np.uint8)
+        else:
+            int16_data = np.frombuffer(raw_data, dtype=np.int16)
+            data_array = int16_data.view(np.uint16)
+
+        seed = seed_from_key(key)
+        idx = traversal_indices(data_array.size, seed)
+
+        # First, read header bits
+        hdr_bits_needed = HEADER_BYTES * 8
+        slots_for_hdr = (hdr_bits_needed + lsb - 1) // lsb
+        
+        if slots_for_hdr > data_array.size:
+            raise ValueError("Not enough data to read header from stream")
+
+        sel_hdr = idx[:slots_for_hdr].astype(np.int64)
+        
+        if stream_type == 'video':
+            vals_hdr = (data_array[sel_hdr] & ((1 << lsb) - 1)).astype(np.uint16)
+        else:
+            vals_hdr = (data_array[sel_hdr] & ((1 << lsb) - 1)).astype(np.uint16)
+        
+        hdr_bits = unpack_stream_from_lsb(vals_hdr, hdr_bits_needed, lsb)
+        hdr = Header.unpack(bits_to_bytes(hdr_bits))
+
+        if hdr.cover_type != COV_VIDEO_STREAM or hdr.lsb_count != lsb:
+            raise ValueError("Wrong key/cover/lsb settings (header mismatch for stream).")
+
+        total_payload_bits = hdr.payload_len * 8
+        slots_for_payload = (total_payload_bits + lsb - 1) // lsb
+        
+        if slots_for_hdr + slots_for_payload > data_array.size:
+            raise ValueError("Not enough data to read payload from stream")
+
+        sel_pl = idx[slots_for_hdr : slots_for_hdr + slots_for_payload].astype(np.int64)
+        
+        if stream_type == 'video':
+            vals_pl = (data_array[sel_pl] & ((1 << lsb) - 1)).astype(np.uint16)
+        else:
+            vals_pl = (data_array[sel_pl] & ((1 << lsb) - 1)).astype(np.uint16)
+        
+        pay_bits = unpack_stream_from_lsb(vals_pl, total_payload_bits, lsb)
+        payload = bits_to_bytes(pay_bits)
+
+        if hashlib.sha256(payload).digest() != hdr.payload_sha256:
+            raise ValueError("Integrity check failed (wrong key or corrupted stream stego).")
+
+        open(out_payload_path, "wb").write(payload)
+        print(f"Extracted {len(payload)} bytes from {stream_type} stream {stream_index} -> {out_payload_path}")
+        
+    except Exception as e:
+        if stream_type == 'video':
+            # If both methods fail for video, give a clear error message
+            raise RuntimeError(f"Failed to extract from video stream: {str(e)}. The file might not contain stream-based embedded data or was encoded with frame-based embedding.")
+        else:
+            # For audio, re-raise the original error
+            raise
+
+
+def _embed_in_video_frames_simple(cover_path: str, payload_path: str, out_path: str, key: str, lsb: int):
+    """Simplified video embedding that works directly with video frames using imageio."""
+    if imageio is None:
+        raise RuntimeError("imageio is required for video support. Please install imageio[ffmpeg].")
+    
+    # Load video frames
+    frames, meta = _iter_video_frames(cover_path)
+    if not frames:
+        raise ValueError("No frames found in video")
+    
+    # Flatten all frame data into a single array for embedding
+    all_frame_data = []
+    for frame in frames:
+        all_frame_data.append(frame.reshape(-1))
+    
+    combined_data = np.concatenate(all_frame_data)
+    
+    seed = seed_from_key(key)
+    idx = traversal_indices(combined_data.size, seed)
+
+    payload = open(payload_path, "rb").read()
+    header = Header(MAGIC, VERSION, COV_VIDEO_STREAM, lsb, len(payload), hashlib.sha256(payload).digest())
+    header_bytes = header.pack()
+
+    # Build bitstream: header + payload
+    bits = np.concatenate([bytes_to_bits(header_bytes), bytes_to_bits(payload)])
+    chunks, needed_slots = pack_stream_for_lsb(bits, lsb)
+
+    # Check capacity
+    if needed_slots > combined_data.size:
+        need = (needed_slots * lsb + 7) // 8
+        cap = (combined_data.size * lsb) // 8
+        raise ValueError(f"Payload requires ~{need} bytes but video capacity is {cap} bytes.")
+
+    # Embed data into LSBs
+    mask = np.uint8(0xFF ^ ((1 << lsb) - 1))
+    target = combined_data.copy()
+    sel = idx[:needed_slots].astype(np.int64)
+    target[sel] = (target[sel] & mask) | chunks.astype(np.uint8)
+
+    # Reconstruct frames
+    current_pos = 0
+    for i, frame in enumerate(frames):
+        frame_size = frame.size
+        frame_data = target[current_pos:current_pos + frame_size]
+        frames[i] = frame_data.reshape(frame.shape)
+        current_pos += frame_size
+
+    # Save video
+    _save_video_frames_rgb(out_path, (frames[j] for j in range(len(frames))), fps=meta["fps"])
+    
+    # Get file sizes for comparison
+    original_size = os.path.getsize(cover_path)
+    stego_size = os.path.getsize(out_path)
+    size_change = stego_size - original_size
+    size_change_pct = (size_change / original_size * 100) if original_size > 0 else 0
+    
+    print(f"Original file: {original_size:,} bytes")
+    print(f"Stego file: {stego_size:,} bytes") 
+    print(f"Size change: {size_change:+,} bytes ({size_change_pct:+.2f}%)")
+    print(f"Capacity used: {needed_slots}/{combined_data.size} slots ({needed_slots/combined_data.size*100:.2f}%)")
+    
+    return len(payload)
+
+
+def _extract_from_video_frames_simple(stego_path: str, key: str, lsb: int):
+    """Simplified video extraction that works directly with video frames using imageio."""
+    if imageio is None:
+        raise RuntimeError("imageio is required for video support. Please install imageio[ffmpeg].")
+    
+    # Load video frames
+    frames, meta = _iter_video_frames(stego_path)
+    if not frames:
+        raise ValueError("No frames found in video")
+    
+    # Flatten all frame data into a single array for extraction
+    all_frame_data = []
+    for frame in frames:
+        all_frame_data.append(frame.reshape(-1))
+    
+    combined_data = np.concatenate(all_frame_data)
+    
+    seed = seed_from_key(key)
+    idx = traversal_indices(combined_data.size, seed)
+
+    # First, read header bits
+    hdr_bits_needed = HEADER_BYTES * 8
+    slots_for_hdr = (hdr_bits_needed + lsb - 1) // lsb
+    
+    if slots_for_hdr > combined_data.size:
+        raise ValueError("Not enough data to read header from video")
+
+    sel_hdr = idx[:slots_for_hdr].astype(np.int64)
+    vals_hdr = (combined_data[sel_hdr] & ((1 << lsb) - 1)).astype(np.uint16)
+    hdr_bits = unpack_stream_from_lsb(vals_hdr, hdr_bits_needed, lsb)
+    hdr = Header.unpack(bits_to_bytes(hdr_bits))
+
+    if hdr.cover_type != COV_VIDEO_STREAM or hdr.lsb_count != lsb:
+        raise ValueError("Wrong key/cover/lsb settings (header mismatch for video stream).")
+
+    total_payload_bits = hdr.payload_len * 8
+    slots_for_payload = (total_payload_bits + lsb - 1) // lsb
+    
+    if slots_for_hdr + slots_for_payload > combined_data.size:
+        raise ValueError("Not enough data to read payload from video")
+
+    sel_pl = idx[slots_for_hdr : slots_for_hdr + slots_for_payload].astype(np.int64)
+    vals_pl = (combined_data[sel_pl] & ((1 << lsb) - 1)).astype(np.uint16)
+    
+    pay_bits = unpack_stream_from_lsb(vals_pl, total_payload_bits, lsb)
+    payload = bits_to_bytes(pay_bits)
+
+    if hashlib.sha256(payload).digest() != hdr.payload_sha256:
+        raise ValueError("Integrity check failed (wrong key or corrupted video stream stego).")
+
+    return payload
