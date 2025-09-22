@@ -3,11 +3,13 @@ from dataclasses import dataclass
 from typing import Tuple, Optional
 import numpy as np
 from PIL import Image
+import cv2
 
 MAGIC = b"INF2"
 VERSION = 1
 COV_IMAGE = 0
 COV_AUDIO = 1
+COV_VIDEO = 2
 
 
 @dataclass
@@ -160,6 +162,71 @@ def save_wav_int16(path: str, data: np.ndarray, n_channels: int, fr: int):
         wf.writeframes(data.tobytes())
 
 
+# ---------- Video I/O (MP4) ----------
+def load_video_frames(path: str) -> Tuple[np.ndarray, dict]:
+    """Load video frames into a numpy array and return video properties"""
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        raise ValueError(f"Cannot open video file: {path}")
+    
+    # Get video properties
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    # Read all frames
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        # Convert BGR to RGB for consistency with PIL
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frames.append(frame_rgb)
+    
+    cap.release()
+    
+    if not frames:
+        raise ValueError("No frames found in video")
+    
+    frames_array = np.array(frames, dtype=np.uint8)
+    properties = {
+        'fps': fps,
+        'width': width,
+        'height': height,
+        'frame_count': frame_count,
+        'fourcc': int(cap.get(cv2.CAP_PROP_FOURCC))
+    }
+    
+    return frames_array, properties
+
+
+def save_video_frames(path: str, frames: np.ndarray, properties: dict):
+    """Save frames array back to video file"""
+    height, width = frames.shape[1:3]
+    
+    # Define codec and create VideoWriter
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(path, fourcc, properties['fps'], (width, height))
+    
+    if not out.isOpened():
+        raise ValueError(f"Cannot create video writer for: {path}")
+    
+    # Write frames
+    for frame in frames:
+        # Convert RGB back to BGR for OpenCV
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        out.write(frame_bgr)
+    
+    out.release()
+
+
+def capacity_bits_video(frames: np.ndarray, lsb: int) -> int:
+    """Calculate capacity in bits for video frames"""
+    return frames.size * lsb
+
+
 # ---------- Region Selection ----------
 def get_region_indices(img_shape, region):
     """Get flat indices for a rectangular region"""
@@ -240,6 +307,46 @@ def calculate_audio_time_capacity(audio_path, time_range, lsb):
     indices = time_to_sample_indices(time_range, sample_rate, n_ch, total_samples)
     
     return len(indices) * lsb // 8
+
+
+# ---------- Video Frame Range Selection ----------
+def frame_range_to_indices(frame_range, total_frames):
+    """Convert frame range to frame indices"""
+    if frame_range is None:
+        return np.arange(total_frames)
+    
+    start_frame = frame_range["start_frame"]
+    end_frame = frame_range["end_frame"]
+    
+    # Ensure bounds are within video
+    start_frame = max(0, min(start_frame, total_frames - 1))
+    end_frame = max(start_frame + 1, min(end_frame, total_frames))
+    
+    return np.arange(start_frame, end_frame)
+
+
+def calculate_video_frame_capacity(video_path, frame_range, lsb):
+    """Calculate capacity for a specific frame range in video"""
+    if frame_range is None:
+        cap = cv2.VideoCapture(video_path)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+        total_pixels = frame_count * width * height * 3  # RGB channels
+        return total_pixels * lsb // 8
+    
+    cap = cv2.VideoCapture(video_path)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    
+    # Get frame indices for range
+    indices = frame_range_to_indices(frame_range, frame_count)
+    frame_pixels = len(indices) * width * height * 3  # RGB channels
+    
+    return frame_pixels * lsb // 8
 
 
 # ---------- Core Embed / Extract ----------
@@ -592,21 +699,224 @@ def do_extract_audio_region(
     print(f"Extracted {len(payload)} bytes from audio{time_info} -> {out_payload_path}")
 
 
+def do_embed_video(
+    cover_path: str, payload_path: str, out_path: str, key: str, lsb: int
+):
+    """Embed payload into video"""
+    frames, properties = load_video_frames(cover_path)
+    flat = frames.reshape(-1)  # Flatten all frames
+    seed = seed_from_key(key)
+    idx = traversal_indices(flat.size, seed)
+
+    payload = open(payload_path, "rb").read()
+    h = Header(
+        MAGIC, VERSION, COV_VIDEO, lsb, len(payload), hashlib.sha256(payload).digest()
+    )
+    header_bytes = h.pack()
+
+    # Build bitstream: header + payload
+    bits = np.concatenate([bytes_to_bits(header_bytes), bytes_to_bits(payload)])
+    chunks, needed_slots = pack_stream_for_lsb(bits, lsb)
+
+    cap_bits = capacity_bits_video(frames, lsb)
+    if needed_slots > flat.size:
+        need = (needed_slots * lsb + 7) // 8
+        cap = cap_bits // 8
+        raise ValueError(f"Payload requires ~{need} bytes but capacity is {cap} bytes.")
+
+    # Write chunks into LSBs along permutation
+    mask = np.uint8(0xFF ^ ((1 << lsb) - 1))
+    target = flat.copy()
+    sel = idx[:needed_slots].astype(np.int64)
+    target[sel] = (target[sel] & mask) | chunks.astype(np.uint8)
+    stego_frames = target.reshape(frames.shape)
+    save_video_frames(out_path, stego_frames, properties)
+    print(f"Embedded {len(payload)} bytes into video -> {out_path}")
+
+
+def do_extract_video(stego_path: str, out_payload_path: str, key: str, lsb: int):
+    """Extract payload from video"""
+    frames, properties = load_video_frames(stego_path)
+    flat = frames.reshape(-1)
+    seed = seed_from_key(key)
+    idx = traversal_indices(flat.size, seed)
+
+    # First, read header bits
+    hdr_bits_needed = HEADER_BYTES * 8
+    slots_for_hdr = (hdr_bits_needed + lsb - 1) // lsb
+    sel_hdr = idx[:slots_for_hdr].astype(np.int64)
+    vals_hdr = (flat[sel_hdr] & ((1 << lsb) - 1)).astype(np.uint16)
+    hdr_bits = unpack_stream_from_lsb(vals_hdr, hdr_bits_needed, lsb)
+    hdr = Header.unpack(bits_to_bytes(hdr_bits))
+
+    if hdr.cover_type != COV_VIDEO or hdr.lsb_count != lsb:
+        raise ValueError("Wrong key/cover/lsb settings (header mismatch).")
+
+    total_payload_bits = hdr.payload_len * 8
+    slots_for_payload = (total_payload_bits + lsb - 1) // lsb
+    sel_pl = idx[slots_for_hdr : slots_for_hdr + slots_for_payload].astype(np.int64)
+    vals_pl = (flat[sel_pl] & ((1 << lsb) - 1)).astype(np.uint16)
+    pay_bits = unpack_stream_from_lsb(vals_pl, total_payload_bits, lsb)
+    payload = bits_to_bytes(pay_bits)
+
+    if hashlib.sha256(payload).digest() != hdr.payload_sha256:
+        raise ValueError("Integrity check failed (wrong key or corrupted stego).")
+
+    open(out_payload_path, "wb").write(payload)
+    print(f"Extracted {len(payload)} bytes from video -> {out_payload_path}")
+
+
+def do_embed_video_region(
+    cover_path: str, payload_path: str, out_path: str, key: str, lsb: int, frame_range=None
+):
+    """Embed payload into video with optional frame range selection"""
+    frames, properties = load_video_frames(cover_path)
+    flat = frames.reshape(-1)
+    seed = seed_from_key(key)
+
+    # Get indices for embedding frame range
+    if frame_range:
+        available_frame_indices = frame_range_to_indices(frame_range, frames.shape[0])
+        if len(available_frame_indices) == 0:
+            raise ValueError("Selected frame range is empty")
+        
+        # Convert frame indices to pixel indices
+        pixels_per_frame = frames.shape[1] * frames.shape[2] * frames.shape[3]
+        available_indices = []
+        for frame_idx in available_frame_indices:
+            start_pixel = frame_idx * pixels_per_frame
+            end_pixel = (frame_idx + 1) * pixels_per_frame
+            available_indices.extend(range(start_pixel, end_pixel))
+        available_indices = np.array(available_indices)
+        
+        if len(available_indices) == 0:
+            raise ValueError("Selected frame range is empty")
+        idx = traversal_indices(len(available_indices), seed)
+        # Map back to original flat indices
+        idx = available_indices[idx]
+    else:
+        idx = traversal_indices(flat.size, seed)
+
+    payload = open(payload_path, "rb").read()
+    h = Header(
+        MAGIC, VERSION, COV_VIDEO, lsb, len(payload), hashlib.sha256(payload).digest()
+    )
+    header_bytes = h.pack()
+
+    # Build bitstream: header + payload
+    bits = np.concatenate([bytes_to_bits(header_bytes), bytes_to_bits(payload)])
+    chunks, needed_slots = pack_stream_for_lsb(bits, lsb)
+
+    if needed_slots > len(idx):
+        need = (needed_slots * lsb + 7) // 8
+        cap = (len(idx) * lsb) // 8
+        frame_info = (
+            f" (frames {frame_range['start_frame']}-{frame_range['end_frame']})"
+            if frame_range else ""
+        )
+        raise ValueError(
+            f"Payload requires ~{need} bytes but capacity is {cap} bytes{frame_info}."
+        )
+
+    # Write chunks into LSBs along permutation
+    mask = np.uint8(0xFF ^ ((1 << lsb) - 1))
+    target = flat.copy()
+    sel = idx[:needed_slots].astype(np.int64)
+    target[sel] = (target[sel] & mask) | chunks.astype(np.uint8)
+    stego_frames = target.reshape(frames.shape)
+    save_video_frames(out_path, stego_frames, properties)
+    
+    frame_info = (
+        f" (frames {frame_range['start_frame']}-{frame_range['end_frame']})"
+        if frame_range else ""
+    )
+    print(f"Embedded {len(payload)} bytes into video{frame_info} -> {out_path}")
+
+
+def do_extract_video_region(
+    stego_path: str, out_payload_path: str, key: str, lsb: int, frame_range=None
+):
+    """Extract payload from video with optional frame range selection"""
+    frames, properties = load_video_frames(stego_path)
+    flat = frames.reshape(-1)
+    seed = seed_from_key(key)
+
+    # Get indices for extraction frame range (must match embedding)
+    if frame_range:
+        available_frame_indices = frame_range_to_indices(frame_range, frames.shape[0])
+        if len(available_frame_indices) == 0:
+            raise ValueError("Selected frame range is empty")
+        
+        # Convert frame indices to pixel indices
+        pixels_per_frame = frames.shape[1] * frames.shape[2] * frames.shape[3]
+        available_indices = []
+        for frame_idx in available_frame_indices:
+            start_pixel = frame_idx * pixels_per_frame
+            end_pixel = (frame_idx + 1) * pixels_per_frame
+            available_indices.extend(range(start_pixel, end_pixel))
+        available_indices = np.array(available_indices)
+        
+        if len(available_indices) == 0:
+            raise ValueError("Selected frame range is empty")
+        idx = traversal_indices(len(available_indices), seed)
+        # Map back to original flat indices
+        idx = available_indices[idx]
+    else:
+        idx = traversal_indices(flat.size, seed)
+
+    # First, read header bits
+    hdr_bits_needed = HEADER_BYTES * 8
+    slots_for_hdr = (hdr_bits_needed + lsb - 1) // lsb
+
+    if slots_for_hdr > len(idx):
+        raise ValueError("Not enough capacity to read header from selected frame range")
+
+    sel_hdr = idx[:slots_for_hdr].astype(np.int64)
+    vals_hdr = (flat[sel_hdr] & ((1 << lsb) - 1)).astype(np.uint16)
+    hdr_bits = unpack_stream_from_lsb(vals_hdr, hdr_bits_needed, lsb)
+    hdr = Header.unpack(bits_to_bytes(hdr_bits))
+
+    if hdr.cover_type != COV_VIDEO or hdr.lsb_count != lsb:
+        raise ValueError("Wrong key/cover/lsb settings (header mismatch).")
+
+    total_payload_bits = hdr.payload_len * 8
+    slots_for_payload = (total_payload_bits + lsb - 1) // lsb
+
+    if slots_for_hdr + slots_for_payload > len(idx):
+        raise ValueError("Not enough capacity to read payload from selected frame range")
+
+    sel_pl = idx[slots_for_hdr : slots_for_hdr + slots_for_payload].astype(np.int64)
+    vals_pl = (flat[sel_pl] & ((1 << lsb) - 1)).astype(np.uint16)
+    pay_bits = unpack_stream_from_lsb(vals_pl, total_payload_bits, lsb)
+    payload = bits_to_bytes(pay_bits)
+
+    if hashlib.sha256(payload).digest() != hdr.payload_sha256:
+        raise ValueError("Integrity check failed (wrong key or corrupted stego).")
+
+    open(out_payload_path, "wb").write(payload)
+    
+    frame_info = (
+        f" (frames {frame_range['start_frame']}-{frame_range['end_frame']})"
+        if frame_range else ""
+    )
+    print(f"Extracted {len(payload)} bytes from video{frame_info} -> {out_payload_path}")
+
+
 # ---------- CLI ----------
 def main():
     p = argparse.ArgumentParser(description="Minimal LSB stego CLI (image/audio)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     e = sub.add_parser("encode", help="Embed payload into cover")
-    e.add_argument("--cover", required=True, help="Cover file (.png/.bmp or .wav)")
+    e.add_argument("--cover", required=True, help="Cover file (.png/.bmp, .wav, or .mp4)")
     e.add_argument("--payload", required=True, help="Payload file (any bytes)")
     e.add_argument("--out", required=True, help="Output stego file")
     e.add_argument("--key", required=True, help="Key (string)")
     e.add_argument("--lsb", type=int, default=2, help="LSBs to use (1-8)")
-    # TODO: --region options later: image rectangle or audio sample range
+    # TODO: --region options later: image rectangle, audio sample range, or video frame range
 
     d = sub.add_parser("decode", help="Extract payload from stego")
-    d.add_argument("--stego", required=True, help="Stego file (.png/.bmp or .wav)")
+    d.add_argument("--stego", required=True, help="Stego file (.png/.bmp, .wav, or .mp4)")
     d.add_argument("--out", required=True, help="Where to write extracted payload")
     d.add_argument("--key", required=True, help="Key (string)")
     d.add_argument("--lsb", type=int, default=2, help="LSBs used (must match)")
@@ -619,16 +929,20 @@ def main():
             do_embed_image(args.cover, args.payload, args.out, args.key, args.lsb)
         elif ext == ".wav":
             do_embed_audio(args.cover, args.payload, args.out, args.key, args.lsb)
+        elif ext == ".mp4":
+            do_embed_video(args.cover, args.payload, args.out, args.key, args.lsb)
         else:
-            sys.exit("Unsupported cover type. Use PNG/BMP or 16-bit PCM WAV.")
+            sys.exit("Unsupported cover type. Use PNG/BMP, 16-bit PCM WAV, or MP4.")
     else:
         ext = os.path.splitext(args.stego)[1].lower()
         if ext in (".png", ".bmp"):
             do_extract_image(args.stego, args.out, args.key, args.lsb)
         elif ext == ".wav":
             do_extract_audio(args.stego, args.out, args.key, args.lsb)
+        elif ext == ".mp4":
+            do_extract_video(args.stego, args.out, args.key, args.lsb)
         else:
-            sys.exit("Unsupported stego type. Use PNG/BMP or 16-bit PCM WAV.")
+            sys.exit("Unsupported stego type. Use PNG/BMP, 16-bit PCM WAV, or MP4.")
 
 
 if __name__ == "__main__":

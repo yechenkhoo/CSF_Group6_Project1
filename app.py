@@ -6,6 +6,7 @@ import streamlit as st
 from PIL import Image
 import matplotlib.pyplot as plt
 import wave
+import cv2
 
 from main import (
     do_embed_image,
@@ -16,10 +17,15 @@ from main import (
     do_extract_image_region,
     do_embed_audio_region,
     do_extract_audio_region,
+    do_embed_video,
+    do_extract_video,
+    do_embed_video_region,
+    do_extract_video_region,
 )
 
 SUPPORTED_IMAGE_EXTS = {".png", ".bmp"}
 SUPPORTED_AUDIO_EXTS = {".wav"}
+SUPPORTED_VIDEO_EXTS = {".mp4"}
 
 st.set_page_config(page_title="LSB Stego", layout="wide")
 
@@ -138,6 +144,64 @@ def get_audio_time_selection(audio_path, key="audio_time"):
     return None
 
 
+def get_video_frame_selection(video_path, key="video_frame"):
+    """Allow user to specify a frame range in the video file"""
+    try:
+        cap = cv2.VideoCapture(video_path)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        cap.release()
+        duration = frame_count / fps if fps > 0 else 0
+    except:
+        # Fallback if we can't read the file
+        frame_count = 1000
+        fps = 30.0
+        duration = frame_count / fps
+
+    use_frame_range = st.checkbox(
+        "Use specific frame range instead of whole video", key=f"{key}_use"
+    )
+    
+    if use_frame_range:
+        st.subheader("Select Video Frame Range")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            start_frame = st.slider(
+                "Start Frame", 
+                0, 
+                max(0, frame_count - 1), 
+                0, 
+                key=f"{key}_start"
+            )
+            
+        with col2:
+            max_frames = frame_count - start_frame
+            frame_range_length = st.slider(
+                "Number of Frames", 
+                1, 
+                max(1, max_frames), 
+                min(100, max_frames), 
+                key=f"{key}_length"
+            )
+        
+        end_frame = start_frame + frame_range_length
+        start_time = start_frame / fps if fps > 0 else 0
+        end_time = end_frame / fps if fps > 0 else 0
+        
+        st.info(f"Frame range: {start_frame}-{end_frame} ({frame_range_length} frames)")
+        st.info(f"Time range: {start_time:.1f}s to {end_time:.1f}s")
+        
+        return {
+            "start_frame": start_frame,
+            "end_frame": end_frame,
+            "frame_count": frame_range_length,
+            "fps": fps
+        }
+    
+    return None
+
+
 def show_region_preview(image, region):
     """Show the selected region highlighted on the image"""
     if region is None:
@@ -203,17 +267,88 @@ def show_audio_time_preview(audio_path, time_range):
         return None
 
 
+def show_video_frame_preview(video_path, frame_range):
+    """Show video frames with selected range highlighted"""
+    if frame_range is None:
+        return None
+        
+    try:
+        cap = cv2.VideoCapture(video_path)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        
+        # Read a few sample frames for preview (max 10 frames)
+        sample_frames = []
+        frame_indices = []
+        
+        # Sample frames evenly across the video
+        max_samples = min(10, frame_count)
+        for i in range(max_samples):
+            frame_idx = int(i * frame_count / max_samples)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            if ret:
+                # Convert BGR to RGB for display
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                sample_frames.append(frame_rgb)
+                frame_indices.append(frame_idx)
+        
+        cap.release()
+        
+        if not sample_frames:
+            return None
+            
+        # Create subplot for frames
+        cols = min(5, len(sample_frames))
+        rows = (len(sample_frames) + cols - 1) // cols
+        fig, axes = plt.subplots(rows, cols, figsize=(15, 3 * rows))
+        if rows == 1 and cols == 1:
+            axes = [axes]
+        elif rows == 1:
+            axes = [axes]
+        else:
+            axes = axes.flatten()
+        
+        start_frame = frame_range["start_frame"]
+        end_frame = frame_range["end_frame"]
+        
+        for i, (frame, frame_idx) in enumerate(zip(sample_frames, frame_indices)):
+            if i < len(axes):
+                axes[i].imshow(frame)
+                axes[i].set_title(f'Frame {frame_idx}')
+                axes[i].axis('off')
+                
+                # Highlight selected frames
+                if start_frame <= frame_idx <= end_frame:
+                    # Add red border for selected frames
+                    for spine in axes[i].spines.values():
+                        spine.set_edgecolor('red')
+                        spine.set_linewidth(3)
+        
+        # Hide unused subplots
+        for i in range(len(sample_frames), len(axes)):
+            axes[i].axis('off')
+        
+        fig.suptitle(f'Video Preview (Selected: frames {start_frame}-{end_frame})', fontsize=14)
+        plt.tight_layout()
+        
+        return fig
+    except Exception as e:
+        st.warning(f"Could not generate video preview: {e}")
+        return None
+
+
 def encode_ui():
     st.subheader("Encode: Hide a payload inside a cover")
     c1, c2 = st.columns(2)
 
     with c1:
         cover_up = st.file_uploader(
-            "Cover file (.png/.bmp or .wav)", type=["png", "bmp", "wav"], key="cover"
+            "Cover file (.png/.bmp, .wav, or .mp4)", type=["png", "bmp", "wav", "mp4"], key="cover"
         )
         payload_up = st.file_uploader("Payload file (any)", type=None, key="payload")
         out_name = st.text_input("Output stego filename", value="stego")
-        ext_choice = st.selectbox("Output type", [".png", ".bmp", ".wav"], index=0)
+        ext_choice = st.selectbox("Output type", [".png", ".bmp", ".wav", ".mp4"], index=0)
         go = st.button("Embed", type="primary")
 
         if cover_up is not None:
@@ -231,6 +366,11 @@ def encode_ui():
                 elif cov_ext in SUPPORTED_AUDIO_EXTS:
                     cap = _capacity_wav_bytes(cov_bytes, lsb)
                     st.info(f"Cover capacity: {cap:,} bytes (lsb={lsb})")
+                elif cov_ext in SUPPORTED_VIDEO_EXTS:
+                    # Save to temp file for video capacity calculation
+                    temp_video_path = _save_to_tmp(cover_up, suffix=cov_ext)
+                    cap = _capacity_video_file(temp_video_path, lsb)
+                    st.info(f"Cover capacity: {cap:,} bytes (lsb={lsb})")
                 else:
                     st.warning("Unsupported cover type")
             except Exception as e:
@@ -240,6 +380,7 @@ def encode_ui():
         st.markdown("**Preview**")
         region = None
         time_range = None
+        frame_range = None
         
         if cover_up is not None and cover_up.type.startswith("image/"):
             # Create image from bytes to avoid file pointer issues
@@ -296,6 +437,31 @@ def encode_ui():
                     st.info(f"Time range capacity: {time_cap:,} bytes (lsb={lsb})")
                 except Exception as e:
                     st.warning(f"Time range capacity calculation failed: {e}")
+
+        elif cover_up is not None and cover_up.type.startswith("video/"):
+            st.video(cover_up)
+            
+            # Save to temp file for frame range selection
+            cov_ext = os.path.splitext(cover_up.name)[1].lower()
+            temp_video_path = _save_to_tmp(cover_up, suffix=cov_ext)
+            
+            # Add frame range selection for video
+            frame_range = get_video_frame_selection(temp_video_path, key="encode")
+            
+            # Show video frame preview with selected range
+            if frame_range:
+                video_fig = show_video_frame_preview(temp_video_path, frame_range)
+                if video_fig:
+                    st.pyplot(video_fig)
+                    plt.close(video_fig)
+                
+                # Calculate capacity for selected frame range
+                try:
+                    from main import calculate_video_frame_capacity
+                    frame_cap = calculate_video_frame_capacity(temp_video_path, frame_range, lsb)
+                    st.info(f"Frame range capacity: {frame_cap:,} bytes (lsb={lsb})")
+                except Exception as e:
+                    st.warning(f"Frame range capacity calculation failed: {e}")
 
     if go:
         if not key:
@@ -395,9 +561,81 @@ def encode_ui():
                             f,
                             file_name=os.path.basename(out_path),
                         )
+
+                elif cov_ext in SUPPORTED_VIDEO_EXTS and ext_choice == ".mp4":
+                    if frame_range:
+                        do_embed_video_region(cover_path, payload_path, out_path, key, lsb, frame_range)
+                        frame_info = f" (frames {frame_range['start_frame']}-{frame_range['end_frame']})"
+                        st.success(f"Embedded into video stego{frame_info}")
+                    else:
+                        do_embed_video(cover_path, payload_path, out_path, key, lsb)
+                        st.success("Embedded into video stego")
+                    
+                    # Video preview
+                    with open(out_path, "rb") as f:
+                        stego_bytes = f.read()
+                        st.video(stego_bytes)
+                    
+                    # Show frame difference visualization (sample frames)
+                    try:
+                        cap_orig = cv2.VideoCapture(cover_path)
+                        cap_stego = cv2.VideoCapture(out_path)
+                        
+                        # Sample a few frames for comparison
+                        frame_count = int(cap_orig.get(cv2.CAP_PROP_FRAME_COUNT))
+                        sample_frames = min(5, frame_count)
+                        
+                        fig, axes = plt.subplots(2, sample_frames, figsize=(15, 6))
+                        if sample_frames == 1:
+                            axes = axes.reshape(-1, 1)
+                        
+                        for i in range(sample_frames):
+                            frame_idx = int(i * frame_count / sample_frames)
+                            
+                            # Read original frame
+                            cap_orig.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                            ret_orig, frame_orig = cap_orig.read()
+                            
+                            # Read stego frame
+                            cap_stego.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                            ret_stego, frame_stego = cap_stego.read()
+                            
+                            if ret_orig and ret_stego:
+                                # Convert to RGB
+                                frame_orig_rgb = cv2.cvtColor(frame_orig, cv2.COLOR_BGR2RGB)
+                                frame_stego_rgb = cv2.cvtColor(frame_stego, cv2.COLOR_BGR2RGB)
+                                
+                                # Show original
+                                axes[0, i].imshow(frame_orig_rgb)
+                                axes[0, i].set_title(f'Original Frame {frame_idx}')
+                                axes[0, i].axis('off')
+                                
+                                # Show difference (amplified)
+                                diff = np.abs(frame_stego_rgb.astype(int) - frame_orig_rgb.astype(int))
+                                diff_amplified = np.clip(diff * 10, 0, 255).astype(np.uint8)
+                                axes[1, i].imshow(diff_amplified)
+                                axes[1, i].set_title(f'Difference x10 Frame {frame_idx}')
+                                axes[1, i].axis('off')
+                        
+                        cap_orig.release()
+                        cap_stego.release()
+                        
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                        plt.close(fig)
+                    except Exception as e:
+                        st.warning(f"Could not generate frame difference visualization: {e}")
+                    
+                    with open(out_path, "rb") as f:
+                        st.download_button(
+                            "Download stego video",
+                            f,
+                            file_name=os.path.basename(out_path),
+                        )
+                        
                 else:
                     st.error(
-                        "Output type must match cover family (image→.png/.bmp, audio→.wav)"
+                        "Output type must match cover family (image→.png/.bmp, audio→.wav, video→.mp4)"
                     )
             except Exception as e:
                 st.error(f"Embed failed: {e}")
@@ -409,7 +647,7 @@ def decode_ui():
 
     with c1:
         stego_up = st.file_uploader(
-            "Stego file (.png/.bmp or .wav)", type=["png", "bmp", "wav"], key="stego"
+            "Stego file (.png/.bmp, .wav, or .mp4)", type=["png", "bmp", "wav", "mp4"], key="stego"
         )
         out_label = st.text_input("Name for extracted file", value="payload.txt")
         go2 = st.button("Extract", type="primary")
@@ -418,6 +656,7 @@ def decode_ui():
         st.markdown("**Preview**")
         decode_region = None
         decode_time_range = None
+        decode_frame_range = None
         
         if stego_up is not None and stego_up.type.startswith("image/"):
             stego_up.seek(0)
@@ -453,6 +692,23 @@ def decode_ui():
                     st.pyplot(waveform_fig)
                     plt.close(waveform_fig)
 
+        elif stego_up is not None and stego_up.type.startswith("video/"):
+            st.video(stego_up)
+            
+            # Save to temp file for frame range selection
+            stego_ext = os.path.splitext(stego_up.name)[1].lower()
+            temp_stego_path = _save_to_tmp(stego_up, suffix=stego_ext)
+            
+            # Add frame range selection for video (must match encoding frame range)
+            decode_frame_range = get_video_frame_selection(temp_stego_path, key="decode")
+            
+            # Show video frame preview with selected range
+            if decode_frame_range:
+                video_fig = show_video_frame_preview(temp_stego_path, decode_frame_range)
+                if video_fig:
+                    st.pyplot(video_fig)
+                    plt.close(video_fig)
+
     if go2:
         if not key:
             st.error("Key is required")
@@ -484,6 +740,14 @@ def decode_ui():
                     else:
                         do_extract_audio(stego_path, out_path, key, lsb)
                         st.success("Extracted payload from audio")
+                elif stego_ext in SUPPORTED_VIDEO_EXTS:
+                    if decode_frame_range:
+                        do_extract_video_region(stego_path, out_path, key, lsb, decode_frame_range)
+                        frame_info = f" (frames {decode_frame_range['start_frame']}-{decode_frame_range['end_frame']})"
+                        st.success(f"Extracted payload from video{frame_info}")
+                    else:
+                        do_extract_video(stego_path, out_path, key, lsb)
+                        st.success("Extracted payload from video")
                 else:
                     st.error("Unsupported stego type")
                     st.stop()
@@ -536,6 +800,19 @@ def _capacity_wav_bytes(wav_bytes: bytes, l: int) -> int:
             raise ValueError("Only 16-bit PCM WAV supported")
         total_samples = n_frames * n_ch
     return (total_samples * l) // 8
+
+
+@st.cache_data
+def _capacity_video_file(video_path: str, l: int) -> int:
+    cap = cv2.VideoCapture(video_path)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    
+    # Calculate total pixels (frames * height * width * channels)
+    total_pixels = frame_count * height * width * 3  # RGB channels
+    return (total_pixels * l) // 8
 
 
 # ---------- UI: Encode ----------
