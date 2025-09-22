@@ -782,7 +782,9 @@ def do_embed_video(cover_path: str, payload_path: str, out_path: str, key: str, 
         apply_count = min(picks.size, remaining)
         if apply_count <= 0:
             break
-        flat_indices = per_frame_idx[i][picks[:apply_count]].astype(np.int64)
+        # Ensure picks are integers and within bounds
+        picks_subset = picks[:apply_count].astype(np.int64)
+        flat_indices = picks_subset  # per_frame_idx[i] is just np.arange(n), so picks_subset are the actual indices
         frame = frames[frame_number]
         flat = frame.reshape(-1)
         flat[flat_indices] = (flat[flat_indices] & mask) | chunks[cursor : cursor + apply_count].astype(np.uint8)
@@ -836,7 +838,9 @@ def do_extract_video(stego_path: str, out_payload_path: str, key: str, lsb: int,
                 continue
             # Respect remaining
             apply_count = min(picks.size, n_slots - taken)
-            flat_indices = per_frame_idx[i][picks[:apply_count]].astype(np.int64)
+            # Ensure picks are integers and within bounds
+            picks_subset = picks[:apply_count].astype(np.int64)
+            flat_indices = picks_subset  # per_frame_idx[i] is just np.arange(n), so picks_subset are the actual indices
             frame = frames[frame_number]
             flat = frame.reshape(-1)
             vals[cursor : cursor + apply_count] = (flat[flat_indices] & ((1 << lsb) - 1)).astype(np.uint16)
