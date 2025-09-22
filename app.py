@@ -410,10 +410,91 @@ def encode_ui():
                             file_name=os.path.basename(out_path),
                         )
                 elif cov_ext in SUPPORTED_VIDEO_EXTS and ext_choice == ".mp4":
-                    from main import do_embed_video
-                    do_embed_video(cover_path, payload_path, out_path, key, lsb, int(st.session_state.get("vid_step_preview", 10)))
+                    from main import do_embed_video, _iter_video_frames
+                    frame_step_val = int(st.session_state.get("vid_step_preview", 10))
+                    
+                    # Load original frames for comparison
+                    try:
+                        original_frames, orig_meta = _iter_video_frames(cover_path)
+                    except Exception as e:
+                        st.error(f"Failed to load original video frames: {e}")
+                        st.stop()
+                    
+                    do_embed_video(cover_path, payload_path, out_path, key, lsb, frame_step_val)
                     st.success("Embedded into video stego")
-                    st.info("Stego video created. Preview disabled (lossless codec not browser-friendly). Please download and play locally.")
+                    
+                    # Load stego frames for comparison
+                    try:
+                        stego_frames, stego_meta = _iter_video_frames(out_path)
+                    except Exception as e:
+                        st.warning(f"Could not load stego frames for visualization: {e}")
+                        stego_frames = None
+                    
+                    # Show video diff visualization
+                    if stego_frames is not None:
+                        st.subheader("Video Steganography Analysis")
+                        
+                        # Calculate which frames were modified
+                        selected_frames = list(range(0, len(original_frames), max(1, frame_step_val)))
+                        st.info(f"Modified {len(selected_frames)} out of {len(original_frames)} frames (every {frame_step_val} frames)")
+                        
+                        # Show sample frames comparison
+                        st.subheader("Frame Comparison")
+                        num_samples = min(3, len(selected_frames))
+                        sample_indices = selected_frames[:num_samples] if len(selected_frames) >= num_samples else selected_frames
+                        
+                        for i, frame_idx in enumerate(sample_indices):
+                            st.write(f"**Frame {frame_idx}:**")
+                            col1, col2, col3 = st.columns(3)
+                            
+                            with col1:
+                                st.image(original_frames[frame_idx], caption=f"Original Frame {frame_idx}", use_container_width=True)
+                            
+                            with col2:
+                                st.image(stego_frames[frame_idx], caption=f"Stego Frame {frame_idx}", use_container_width=True)
+                            
+                            with col3:
+                                # Calculate LSB difference
+                                orig_frame = original_frames[frame_idx]
+                                stego_frame = stego_frames[frame_idx]
+                                
+                                # Compute difference in LSBs
+                                diff = (stego_frame ^ orig_frame) & ((1 << lsb) - 1)
+                                
+                                # Amplify to make visible
+                                scale = 255 // ((1 << lsb) - 1) if lsb < 8 else 1
+                                diff_vis = (diff * scale).astype(np.uint8)
+                                
+                                st.image(diff_vis, caption=f"LSB Differences (x{scale})", use_container_width=True)
+                        
+                        # Show modified frames grid
+                        if len(selected_frames) > 3:
+                            st.subheader("All Modified Frames (Thumbnails)")
+                            cols_per_row = 6
+                            rows = (len(selected_frames) + cols_per_row - 1) // cols_per_row
+                            
+                            for row in range(min(3, rows)):  # Show max 3 rows
+                                cols = st.columns(cols_per_row)
+                                for col_idx in range(cols_per_row):
+                                    frame_idx_in_list = row * cols_per_row + col_idx
+                                    if frame_idx_in_list < len(selected_frames):
+                                        frame_num = selected_frames[frame_idx_in_list]
+                                        with cols[col_idx]:
+                                            # Show difference thumbnail
+                                            orig_frame = original_frames[frame_num]
+                                            stego_frame = stego_frames[frame_num]
+                                            diff = (stego_frame ^ orig_frame) & ((1 << lsb) - 1)
+                                            scale = 255 // ((1 << lsb) - 1) if lsb < 8 else 1
+                                            diff_vis = (diff * scale).astype(np.uint8)
+                                            st.image(diff_vis, caption=f"F{frame_num}", use_container_width=True)
+                            
+                            if len(selected_frames) > rows * cols_per_row:
+                                st.caption(f"... and {len(selected_frames) - rows * cols_per_row} more modified frames")
+                        
+                        st.info("Note: Stego video uses lossless codec. Preview may not work in all browsers. Download for local playback.")
+                    else:
+                        st.info("Video embedded successfully, but frame comparison visualization is not available.")
+                    
                     with open(out_path, "rb") as f:
                         st.download_button(
                             "Download stego video",
