@@ -6,6 +6,7 @@ import streamlit as st
 from PIL import Image
 import matplotlib.pyplot as plt
 import wave
+from collections import Counter
 
 from main import (
     do_embed_image,
@@ -35,7 +36,7 @@ hide_streamlit_style = """
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;}
+    .stAppDeployButton {visibility: hidden;}
     </style>
 """
 
@@ -353,6 +354,58 @@ def show_video_stream_analysis(video_path, stream_type, stream_index, lsb=2):
     except Exception as e:
         st.error(f"Could not generate stream analysis: {e}")
         return None
+    
+def plot_image_lsb_distribution(orig_path, stego_path, lsb=1):
+    orig = np.array(Image.open(orig_path).convert("RGB"), dtype=np.uint8)
+    stego = np.array(Image.open(stego_path).convert("RGB"), dtype=np.uint8)
+    mask = (1 << lsb) - 1
+    orig_lsb = orig & mask
+    stego_lsb = stego & mask
+
+    orig_flat = orig_lsb.ravel()
+    stego_flat = stego_lsb.ravel()
+
+    fig, axs = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
+
+    axs[0].hist(orig_flat, bins=mask+1, range=(0, mask), color='blue', alpha=0.7)
+    axs[0].set_title("Original Image LSB Histogram")
+    axs[0].set_xlabel("LSB Value")
+    axs[0].set_ylabel("Frequency")
+
+    axs[1].hist(stego_flat, bins=mask+1, range=(0, mask), color='orange', alpha=0.7)
+    axs[1].set_title("Stego Image LSB Histogram")
+    axs[1].set_xlabel("LSB Value")
+
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+def plot_audio_lsb_distribution(orig_path, stego_path, lsb=1):
+    def read_wave(path):
+        with wave.open(path, "rb") as wf:
+            return np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+
+    arr_orig = read_wave(orig_path)
+    arr_stego = read_wave(stego_path)
+
+    mask = (1 << lsb) - 1
+    orig_lsb = arr_orig & mask
+    stego_lsb = arr_stego & mask
+
+    fig, axs = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
+
+    axs[0].hist(orig_lsb, bins=mask+1, range=(0, mask), color='blue', alpha=0.7)
+    axs[0].set_title("Original Audio LSB Histogram")
+    axs[0].set_xlabel("LSB Value")
+    axs[0].set_ylabel("Frequency")
+
+    axs[1].hist(stego_lsb, bins=mask+1, range=(0, mask), color='orange', alpha=0.7)
+    axs[1].set_title("Stego Audio LSB Histogram")
+    axs[1].set_xlabel("LSB Value")
+
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
 
 
 def encode_ui():
@@ -590,6 +643,13 @@ def encode_ui():
                         caption=f"Difference map of used LSBs (x{scale})",
                         use_container_width=True,
                     )
+
+                    # Histogram of pixel differences
+                    try:
+                        plot_image_lsb_distribution(cover_path, out_path, lsb=lsb)
+                    except Exception as e:
+                        st.warning(f"Could not generate difference histogram: {e}")
+
                     # Download
                     with open(out_path, "rb") as f:
                         st.download_button(
@@ -632,6 +692,13 @@ def encode_ui():
                             f,
                             file_name=os.path.basename(out_path),
                         )
+
+                    # Histogram of audio differences
+                    try:
+                        plot_audio_lsb_distribution(cover_path, out_path, lsb=lsb)
+                    except Exception as e:
+                        st.warning(f"Could not generate audio difference histogram: {e}")
+
                 elif cov_ext in SUPPORTED_VIDEO_EXTS and ext_choice == ".mp4":
                     # Check which video method was selected
                     selected_method = st.session_state.get("video_method", "Frame-based (existing)")
