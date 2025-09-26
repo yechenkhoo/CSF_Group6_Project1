@@ -257,21 +257,31 @@ def do_embed_image(
     )
     header_bytes = h.pack()
 
-    # Build bitstream: header + payload
-    bits = np.concatenate([bytes_to_bits(header_bytes), bytes_to_bits(payload)])
-    chunks, needed_slots = pack_stream_for_lsb(bits, lsb)
+    # --- pack header and payload SEPARATELY (fixes lsb=5/7) ---
+    header_bits = bytes_to_bits(header_bytes)
+    payload_bits = bytes_to_bits(payload)
+
+    hdr_chunks, hdr_slots = pack_stream_for_lsb(header_bits, lsb)
+    pl_chunks,  pl_slots  = pack_stream_for_lsb(payload_bits, lsb)
+    total_slots = hdr_slots + pl_slots
 
     cap_bits = capacity_bits_image(img, lsb)
-    if needed_slots > flat.size:
-        need = (needed_slots * lsb + 7) // 8
+    if total_slots > flat.size:
+        need = (total_slots * lsb + 7) // 8
         cap = cap_bits // 8
         raise ValueError(f"Payload requires ~{need} bytes but capacity is {cap} bytes.")
 
     # Write chunks into LSBs along permutation
     mask = np.uint8(0xFF ^ ((1 << lsb) - 1))
     target = flat.copy()
-    sel = idx[:needed_slots].astype(np.int64)
-    target[sel] = (target[sel] & mask) | chunks.astype(np.uint8)
+    sel = idx[:total_slots].astype(np.int64)
+
+    # header first…
+    target[sel[:hdr_slots]] = (target[sel[:hdr_slots]] & mask) | hdr_chunks.astype(np.uint8)
+    # …then payload starting exactly at next slot
+    start = hdr_slots
+    target[sel[start:start+pl_slots]] = (target[sel[start:start+pl_slots]] & mask) | pl_chunks.astype(np.uint8)
+
     stego = target.reshape(shape)
     save_image_bytes(out_path, stego, mode)
     print(f"Embedded {len(payload)} bytes into image -> {out_path}")
@@ -309,50 +319,49 @@ def do_extract_image(stego_path: str, out_payload_path: str, key: str, lsb: int)
     print(f"Extracted {len(payload)} bytes from image -> {out_payload_path}")
 
 
-def do_embed_image_region(
-    cover_path: str, payload_path: str, out_path: str, key: str, lsb: int, region=None
-):
-    """Embed payload into image with optional region selection"""
+def do_embed_image_region(cover_path: str, payload_path: str, out_path: str, key: str, lsb: int, region=None):
     img, shape, mode = load_image_bytes(cover_path)
     flat = img.reshape(-1)
     seed = seed_from_key(key)
 
-    # gets indices for embedding region
+    # indices inside selected region (or whole image)
     if region:
         available_indices = get_region_indices(shape, region)
         if len(available_indices) == 0:
             raise ValueError("Selected region is empty")
-        idx = traversal_indices(len(available_indices), seed)
-        # need to map back to original flat indices
-        idx = available_indices[idx]
+        perm = traversal_indices(len(available_indices), seed)
+        idx = available_indices[perm]
     else:
         idx = traversal_indices(flat.size, seed)
 
     payload = open(payload_path, "rb").read()
-    h = Header(
-        MAGIC, VERSION, COV_IMAGE, lsb, len(payload), hashlib.sha256(payload).digest()
-    )
+    h = Header(MAGIC, VERSION, COV_IMAGE, lsb, len(payload), hashlib.sha256(payload).digest())
     header_bytes = h.pack()
 
-    # builds bitstream: header + payload
-    bits = np.concatenate([bytes_to_bits(header_bytes), bytes_to_bits(payload)])
-    chunks, needed_slots = pack_stream_for_lsb(bits, lsb)
+    # Pack header and payload SEPARATELY (critical for lsb=5/7)
+    header_bits  = bytes_to_bits(header_bytes)
+    payload_bits = bytes_to_bits(payload)
 
-    if needed_slots > len(idx):
-        need = (needed_slots * lsb + 7) // 8
-        cap = (len(idx) * lsb) // 8
-        region_info = (
-            f" (region {region['width']}×{region['height']})" if region else ""
-        )
-        raise ValueError(
-            f"Payload requires ~{need} bytes but capacity is {cap} bytes{region_info}."
-        )
+    hdr_chunks, hdr_slots = pack_stream_for_lsb(header_bits,  lsb)
+    pl_chunks,  pl_slots  = pack_stream_for_lsb(payload_bits, lsb)
+    total_slots = hdr_slots + pl_slots
 
-    # Write chunks into LSBs along permutation
+    if total_slots > len(idx):
+        need = (total_slots * lsb + 7) // 8
+        cap  = (len(idx) * lsb) // 8
+        region_info = f" (region {region['width']}×{region['height']})" if region else ""
+        raise ValueError(f"Payload requires ~{need} bytes but capacity is {cap} bytes{region_info}.")
+
     mask = np.uint8(0xFF ^ ((1 << lsb) - 1))
     target = flat.copy()
-    sel = idx[:needed_slots].astype(np.int64)
-    target[sel] = (target[sel] & mask) | chunks.astype(np.uint8)
+    sel = idx[:total_slots].astype(np.int64)
+
+    # write header first...
+    target[sel[:hdr_slots]] = (target[sel[:hdr_slots]] & mask) | hdr_chunks.astype(np.uint8)
+    # ...then payload starting exactly on the next slot boundary
+    start = hdr_slots
+    target[sel[start:start+pl_slots]] = (target[sel[start:start+pl_slots]] & mask) | pl_chunks.astype(np.uint8)
+
     stego = target.reshape(shape)
     save_image_bytes(out_path, stego, mode)
     region_info = f" (region {region['width']}×{region['height']})" if region else ""
@@ -414,37 +423,36 @@ def do_extract_image_region(
     )
 
 
-def do_embed_audio(
-    cover_path: str, payload_path: str, out_path: str, key: str, lsb: int
-):
+def do_embed_audio(cover_path, payload_path, out_path, key, lsb):
     samples, n_ch, fr = load_wav_int16(cover_path)
-    # Work with uint16 to avoid sign issues when masking
     buf = samples.view(np.uint16)
     seed = seed_from_key(key)
     idx = traversal_indices(buf.size, seed)
 
     payload = open(payload_path, "rb").read()
-    h = Header(
-        MAGIC, VERSION, COV_AUDIO, lsb, len(payload), hashlib.sha256(payload).digest()
-    )
+    h = Header(MAGIC, VERSION, COV_AUDIO, lsb, len(payload), hashlib.sha256(payload).digest())
     header_bytes = h.pack()
 
-    bits = np.concatenate([bytes_to_bits(header_bytes), bytes_to_bits(payload)])
-    chunks, needed_slots = pack_stream_for_lsb(bits, lsb)
+    header_bits  = bytes_to_bits(header_bytes)
+    payload_bits = bytes_to_bits(payload)
+    hdr_chunks, hdr_slots = pack_stream_for_lsb(header_bits,  lsb)
+    pl_chunks,  pl_slots  = pack_stream_for_lsb(payload_bits, lsb)
+    total_slots = hdr_slots + pl_slots
 
     cap_bits = capacity_bits_audio(buf, lsb)
-    if needed_slots > buf.size:
-        need = (needed_slots * lsb + 7) // 8
-        cap = cap_bits // 8
+    if total_slots > buf.size:
+        need = (total_slots * lsb + 7) // 8
+        cap  = cap_bits // 8
         raise ValueError(f"Payload requires ~{need} bytes but capacity is {cap} bytes.")
 
     mask = np.uint16(0xFFFF ^ ((1 << lsb) - 1))
     target = buf.copy()
-    sel = idx[:needed_slots].astype(np.int64)
-    target[sel] = (target[sel] & mask) | chunks.astype(np.uint16)
-    # Save back as int16
-    out_i16 = target.view(np.int16)
-    save_wav_int16(out_path, out_i16, n_ch, fr)
+    sel = idx[:total_slots].astype(np.int64)
+    target[sel[:hdr_slots]] = (target[sel[:hdr_slots]] & mask) | hdr_chunks.astype(np.uint16)
+    start = hdr_slots
+    target[sel[start:start+pl_slots]] = (target[sel[start:start+pl_slots]] & mask) | pl_chunks.astype(np.uint16)
+
+    save_wav_int16(out_path, target.view(np.int16), n_ch, fr)
     print(f"Embedded {len(payload)} bytes into audio -> {out_path}")
 
 
@@ -481,58 +489,57 @@ def do_extract_audio(stego_path: str, out_payload_path: str, key: str, lsb: int)
 def do_embed_audio_region(
     cover_path: str, payload_path: str, out_path: str, key: str, lsb: int, time_range=None
 ):
-    """Embed payload into audio with optional time range selection"""
+    """Embed payload into audio with optional time range selection (slot-aligned)."""
+    # Load cover and choose index set (full audio or selected time range)
     samples, n_ch, fr = load_wav_int16(cover_path)
     buf = samples.view(np.uint16)
     seed = seed_from_key(key)
 
-    # Get indices for embedding time range
     if time_range:
         available_indices = time_to_sample_indices(time_range, fr, n_ch, buf.size)
         if len(available_indices) == 0:
             raise ValueError("Selected time range is empty")
-        idx = traversal_indices(len(available_indices), seed)
-        # Map back to original sample indices
-        idx = available_indices[idx]
+        perm = traversal_indices(len(available_indices), seed)
+        idx = available_indices[perm]
     else:
         idx = traversal_indices(buf.size, seed)
 
+    # Build header
     payload = open(payload_path, "rb").read()
-    h = Header(
-        MAGIC, VERSION, COV_AUDIO, lsb, len(payload), hashlib.sha256(payload).digest()
-    )
+    h = Header(MAGIC, VERSION, COV_AUDIO, lsb, len(payload), hashlib.sha256(payload).digest())
     header_bytes = h.pack()
 
-    # Build bitstream: header + payload
-    bits = np.concatenate([bytes_to_bits(header_bytes), bytes_to_bits(payload)])
-    chunks, needed_slots = pack_stream_for_lsb(bits, lsb)
+    # *** Pack header and payload SEPARATELY ***
+    header_bits  = bytes_to_bits(header_bytes)
+    payload_bits = bytes_to_bits(payload)
 
-    if needed_slots > len(idx):
-        need = (needed_slots * lsb + 7) // 8
-        cap = (len(idx) * lsb) // 8
-        time_info = (
-            f" (time {time_range['start_time']:.1f}s-{time_range['end_time']:.1f}s)" 
-            if time_range else ""
-        )
-        raise ValueError(
-            f"Payload requires ~{need} bytes but capacity is {cap} bytes{time_info}."
-        )
+    hdr_chunks, hdr_slots = pack_stream_for_lsb(header_bits,  lsb)
+    pl_chunks,  pl_slots  = pack_stream_for_lsb(payload_bits, lsb)
+    total_slots = hdr_slots + pl_slots
 
-    # Write chunks into LSBs along permutation
+    # Capacity check against the chosen indices
+    if total_slots > len(idx):
+        need = (total_slots * lsb + 7) // 8
+        cap  = (len(idx) * lsb) // 8
+        tinfo = f" (time {time_range['start_time']:.1f}s-{time_range['end_time']:.1f}s)" if time_range else ""
+        raise ValueError(f"Payload requires ~{need} bytes but capacity is {cap} bytes{tinfo}.")
+
+    # Write chunks into LSBs
     mask = np.uint16(0xFFFF ^ ((1 << lsb) - 1))
     target = buf.copy()
-    sel = idx[:needed_slots].astype(np.int64)
-    target[sel] = (target[sel] & mask) | chunks.astype(np.uint16)
-    
+    sel = idx[:total_slots].astype(np.int64)
+
+    # header first…
+    target[sel[:hdr_slots]] = (target[sel[:hdr_slots]] & mask) | hdr_chunks.astype(np.uint16)
+    # …then payload starting at the next slot boundary
+    start = hdr_slots
+    target[sel[start:start+pl_slots]] = (target[sel[start:start+pl_slots]] & mask) | pl_chunks.astype(np.uint16)
+
     # Save back as int16
-    out_i16 = target.view(np.int16)
-    save_wav_int16(out_path, out_i16, n_ch, fr)
-    
-    time_info = (
-        f" (time {time_range['start_time']:.1f}s-{time_range['end_time']:.1f}s)" 
-        if time_range else ""
-    )
-    print(f"Embedded {len(payload)} bytes into audio{time_info} -> {out_path}")
+    save_wav_int16(out_path, target.view(np.int16), n_ch, fr)
+
+    tinfo = f" (time {time_range['start_time']:.1f}s-{time_range['end_time']:.1f}s)" if time_range else ""
+    print(f"Embedded {len(payload)} bytes into audio{tinfo} -> {out_path}")
 
 
 def do_extract_audio_region(
@@ -986,8 +993,14 @@ def do_embed_video(cover_path: str, payload_path: str, out_path: str, key: str, 
     header = Header(MAGIC, VERSION, COV_VIDEO, lsb, len(payload), hashlib.sha256(payload).digest())
     header_bytes = header.pack()
 
-    bits = np.concatenate([bytes_to_bits(header_bytes), bytes_to_bits(payload)])
-    chunks, needed_slots = pack_stream_for_lsb(bits, lsb)
+    header_bits  = bytes_to_bits(header_bytes)
+    payload_bits = bytes_to_bits(payload)
+
+    hdr_chunks, hdr_slots = pack_stream_for_lsb(header_bits,  lsb)
+    pl_chunks,  pl_slots  = pack_stream_for_lsb(payload_bits, lsb)
+
+    chunks = np.concatenate([hdr_chunks, pl_chunks])  # safe: starts payload on next slot
+    needed_slots = chunks.size
 
     # Capacity
     selected_frames, per_frame_idx, global_perm, total_slots = _video_traversal_indices_for_frames(
@@ -1169,9 +1182,14 @@ def do_embed_video_stream(cover_path: str, payload_path: str, out_path: str, key
         header = Header(MAGIC, VERSION, COV_VIDEO_STREAM, lsb, len(payload), hashlib.sha256(payload).digest())
         header_bytes = header.pack()
 
-        # Build bitstream: header + payload
-        bits = np.concatenate([bytes_to_bits(header_bytes), bytes_to_bits(payload)])
-        chunks, needed_slots = pack_stream_for_lsb(bits, lsb)
+        header_bits  = bytes_to_bits(header_bytes)
+        payload_bits = bytes_to_bits(payload)
+
+        hdr_chunks, hdr_slots = pack_stream_for_lsb(header_bits,  lsb)
+        pl_chunks,  pl_slots  = pack_stream_for_lsb(payload_bits, lsb)
+
+        chunks = np.concatenate([hdr_chunks, pl_chunks])  # safe: starts payload on next slot
+        needed_slots = chunks.size
 
         # Check capacity
         if needed_slots > data_array.size:
@@ -1340,8 +1358,14 @@ def _embed_in_video_frames_simple(cover_path: str, payload_path: str, out_path: 
     header_bytes = header.pack()
 
     # Build bitstream: header + payload
-    bits = np.concatenate([bytes_to_bits(header_bytes), bytes_to_bits(payload)])
-    chunks, needed_slots = pack_stream_for_lsb(bits, lsb)
+    header_bits  = bytes_to_bits(header_bytes)
+    payload_bits = bytes_to_bits(payload)
+
+    hdr_chunks, hdr_slots = pack_stream_for_lsb(header_bits,  lsb)
+    pl_chunks,  pl_slots  = pack_stream_for_lsb(payload_bits, lsb)
+
+    chunks = np.concatenate([hdr_chunks, pl_chunks])  # safe: starts payload on next slot
+    needed_slots = chunks.size
 
     # Check capacity
     if needed_slots > combined_data.size:
