@@ -1,0 +1,222 @@
+A group of system quality engineers wish to customize the command line calculator program
+to perform quality metric calculations. The engineers need to calculate the defect density of a
+system. Furthermore, they require a custom calculation for the new total number of Shipped
+Source Instructions (SSI) in the successive releases of a system (2nd release onward). The
+engineers also wish to be able to use the Musa Logarithmic model to calculate failure intensity
+and the number of expected failures, performing each of these using a single calculator
+command. 
+
+Each story tends to be written from the user’s perspective and follows the format: “As [a user
+persona], I want [to perform this action] so that [I can accomplish this goal].” Note, this does not
+describe exactly how this functionality is to be implemented, but rather what a user is hoping to
+achieve and why. Note that in SpecFlow, Features are written in such a way as to map one-to-one to
+User Stories—with minor formatting differences.
+
+When we’re decomposing software systems into its required functionality, there is a variety of
+terminology used. It’s important for us to be clear about the following terms when describing our
+systems.
+
+A group of system quality engineers wish to customize the command line calculator program
+to perform quality metric calculations. The engineers need to calculate the defect density of a
+system. Furthermore, they require a custom calculation for the new total number of Shipped
+Source Instructions (SSI) in the successive releases of a system (2nd release onward). The
+engineers also wish to be able to use the Musa Logarithmic model to calculate failure intensity
+and the number of expected failures, performing each of these using a single calculator
+command. 
+
+Each story tends to be written from the user’s perspective and follows the format: “As [a user
+persona], I want [to perform this action] so that [I can accomplish this goal].” Note, this does not
+describe exactly how this functionality is to be implemented, but rather what a user is hoping to
+achieve and why. Note that in SpecFlow, Features are written in such a way as to map one-to-one to
+User Stories—with minor formatting differences.
+
+When we’re decomposing software systems into its required functionality, there is a variety of
+terminology used. It’s important for us to be clear about the following terms when describing our
+systems.
+A group of system quality engineers wish to customize the command line calculator program
+to perform quality metric calculations. The engineers need to calculate the defect density of a
+system. Furthermore, they require a custom calculation for the new total number of Shipped
+Source Instructions (SSI) in the successive releases of a system (2nd release onward). The
+engineers also wish to be able to use the Musa Logarithmic model to calculate failure intensity
+and the number of expected failures, performing each of these using a single calculator
+command. 
+
+Each story tends to be written from the user’s perspective and follows the format: “As [a user
+persona], I want [to perform this action] so that [I can accomplish this goal].” Note, this does not
+describe exactly how this functionality is to be implemented, but rather what a user is hoping to
+achieve and why. Note that in SpecFlow, Features are written in such a way as to map one-to-one to
+User Stories—with minor formatting differences.
+
+When we’re decomposing software systems into its required functionality, there is a variety of
+terminology used. It’s important for us to be clear about the following terms when describing our
+systems.
+A group of system quality engineers wish to customize the command line calculator program
+to perform quality metric calculations. The engineers need to calculate the defect density of a
+system. Furthermore, they require a custom calculation for the new total number of Shipped
+Source Instructions (SSI) in the successive releases of a system (2nd release onward). The
+engineers also wish to be able to use the Musa Logarithmic model to calculate failure intensity
+and the number of expected failures, performing each of these using a single calculator
+command. 
+
+Each story tends to be written from the user’s perspective and follows the format: “As [a user
+persona], I want [to perform this action] so that [I can accomplish this goal].” Note, this does not
+describe exactly how this functionality is to be implemented, but rather what a user is hoping to
+achieve and why. Note that in SpecFlow, Features are written in such a way as to map one-to-one to
+User Stories—with minor formatting differences.
+
+When we’re decomposing software systems into its required functionality, there is a variety of
+terminology used. It’s important for us to be clear about the following terms when describing our
+systems.
+A group of system quality engineers wish to customize the command line calculator program
+to perform quality metric calculations. The engineers need to calculate the defect density of a
+system. Furthermore, they require a custom calculation for the new total number of Shipped
+Source Instructions (SSI) in the successive releases of a system (2nd release onward). The
+engineers also wish to be able to use the Musa Logarithmic model to calculate failure intensity
+and the number of expected failures, performing each of these using a single calculator
+command. 
+
+Each story tends to be written from the user’s perspective and follows the format: “As [a user
+persona], I want [to perform this action] so that [I can accomplish this goal].” Note, this does not
+describe exactly how this functionality is to be implemented, but rather what a user is hoping to
+achieve and why. Note that in SpecFlow, Features are written in such a way as to map one-to-one to
+User Stories—with minor formatting differences.
+
+When we’re decomposing software systems into its required functionality, there is a variety of
+terminology used. It’s important for us to be clear about the following terms when describing our
+systems.
+A group of system quality engineers wish to customize the command line calculator program
+to perform quality metric calculations. The engineers need to calculate the defect density of a
+system. Furthermore, they require a custom calculation for the new total number of Shipped
+Source Instructions (SSI) in the successive releases of a system (2nd release onward). The
+engineers also wish to be able to use the Musa Logarithmic model to calculate failure intensity
+and the number of expected failures, performing each of these using a single calculator
+command. 
+
+Each story tends to be written from the user’s perspective and follows the format: “As [a user
+persona], I want [to perform this action] so that [I can accomplish this goal].” Note, this does not
+describe exactly how this functionality is to be implemented, but rather what a user is hoping to
+achieve and why. Note that in SpecFlow, Features are written in such a way as to map one-to-one to
+User Stories—with minor formatting differences.
+
+When we’re decomposing software systems into its required functionality, there is a variety of
+terminology used. It’s important for us to be clear about the following terms when describing our
+systems.
+A group of system quality engineers wish to customize the command line calculator program
+to perform quality metric calculations. The engineers need to calculate the defect density of a
+system. Furthermore, they require a custom calculation for the new total number of Shipped
+Source Instructions (SSI) in the successive releases of a system (2nd release onward). The
+engineers also wish to be able to use the Musa Logarithmic model to calculate failure intensity
+and the number of expected failures, performing each of these using a single calculator
+command. 
+
+Each story tends to be written from the user’s perspective and follows the format: “As [a user
+persona], I want [to perform this action] so that [I can accomplish this goal].” Note, this does not
+describe exactly how this functionality is to be implemented, but rather what a user is hoping to
+achieve and why. Note that in SpecFlow, Features are written in such a way as to map one-to-one to
+User Stories—with minor formatting differences.
+
+When we’re decomposing software systems into its required functionality, there is a variety of
+terminology used. It’s important for us to be clear about the following terms when describing our
+systems.
+A group of system quality engineers wish to customize the command line calculator program
+to perform quality metric calculations. The engineers need to calculate the defect density of a
+system. Furthermore, they require a custom calculation for the new total number of Shipped
+Source Instructions (SSI) in the successive releases of a system (2nd release onward). The
+engineers also wish to be able to use the Musa Logarithmic model to calculate failure intensity
+and the number of expected failures, performing each of these using a single calculator
+command. 
+
+Each story tends to be written from the user’s perspective and follows the format: “As [a user
+persona], I want [to perform this action] so that [I can accomplish this goal].” Note, this does not
+describe exactly how this functionality is to be implemented, but rather what a user is hoping to
+achieve and why. Note that in SpecFlow, Features are written in such a way as to map one-to-one to
+User Stories—with minor formatting differences.
+
+When we’re decomposing software systems into its required functionality, there is a variety of
+terminology used. It’s important for us to be clear about the following terms when describing our
+systems.
+A group of system quality engineers wish to customize the command line calculator program
+to perform quality metric calculations. The engineers need to calculate the defect density of a
+system. Furthermore, they require a custom calculation for the new total number of Shipped
+Source Instructions (SSI) in the successive releases of a system (2nd release onward). The
+engineers also wish to be able to use the Musa Logarithmic model to calculate failure intensity
+and the number of expected failures, performing each of these using a single calculator
+command. 
+
+Each story tends to be written from the user’s perspective and follows the format: “As [a user
+persona], I want [to perform this action] so that [I can accomplish this goal].” Note, this does not
+describe exactly how this functionality is to be implemented, but rather what a user is hoping to
+achieve and why. Note that in SpecFlow, Features are written in such a way as to map one-to-one to
+User Stories—with minor formatting differences.
+
+When we’re decomposing software systems into its required functionality, there is a variety of
+terminology used. It’s important for us to be clear about the following terms when describing our
+systems.
+A group of system quality engineers wish to customize the command line calculator program
+to perform quality metric calculations. The engineers need to calculate the defect density of a
+system. Furthermore, they require a custom calculation for the new total number of Shipped
+Source Instructions (SSI) in the successive releases of a system (2nd release onward). The
+engineers also wish to be able to use the Musa Logarithmic model to calculate failure intensity
+and the number of expected failures, performing each of these using a single calculator
+command. 
+
+Each story tends to be written from the user’s perspective and follows the format: “As [a user
+persona], I want [to perform this action] so that [I can accomplish this goal].” Note, this does not
+describe exactly how this functionality is to be implemented, but rather what a user is hoping to
+achieve and why. Note that in SpecFlow, Features are written in such a way as to map one-to-one to
+User Stories—with minor formatting differences.
+
+When we’re decomposing software systems into its required functionality, there is a variety of
+terminology used. It’s important for us to be clear about the following terms when describing our
+systems.
+A group of system quality engineers wish to customize the command line calculator program
+to perform quality metric calculations. The engineers need to calculate the defect density of a
+system. Furthermore, they require a custom calculation for the new total number of Shipped
+Source Instructions (SSI) in the successive releases of a system (2nd release onward). The
+engineers also wish to be able to use the Musa Logarithmic model to calculate failure intensity
+and the number of expected failures, performing each of these using a single calculator
+command. 
+
+Each story tends to be written from the user’s perspective and follows the format: “As [a user
+persona], I want [to perform this action] so that [I can accomplish this goal].” Note, this does not
+describe exactly how this functionality is to be implemented, but rather what a user is hoping to
+achieve and why. Note that in SpecFlow, Features are written in such a way as to map one-to-one to
+User Stories—with minor formatting differences.
+
+When we’re decomposing software systems into its required functionality, there is a variety of
+terminology used. It’s important for us to be clear about the following terms when describing our
+systems.
+A group of system quality engineers wish to customize the command line calculator program
+to perform quality metric calculations. The engineers need to calculate the defect density of a
+system. Furthermore, they require a custom calculation for the new total number of Shipped
+Source Instructions (SSI) in the successive releases of a system (2nd release onward). The
+engineers also wish to be able to use the Musa Logarithmic model to calculate failure intensity
+and the number of expected failures, performing each of these using a single calculator
+command. 
+
+Each story tends to be written from the user’s perspective and follows the format: “As [a user
+persona], I want [to perform this action] so that [I can accomplish this goal].” Note, this does not
+describe exactly how this functionality is to be implemented, but rather what a user is hoping to
+achieve and why. Note that in SpecFlow, Features are written in such a way as to map one-to-one to
+User Stories—with minor formatting differences.
+
+When we’re decomposing software systems into its required functionality, there is a variety of
+terminology used. It’s important for us to be clear about the following terms when describing our
+systems.
+A group of system quality engineers wish to customize the command line calculator program
+to perform quality metric calculations. The engineers need to calculate the defect density of a
+system. Furthermore, they require a custom calculation for the new total number of Shipped
+Source Instructions (SSI) in the successive releases of a system (2nd release onward). The
+engineers also wish to be able to use the Musa Logarithmic model to calculate failure intensity
+and the number of expected failures, performing each of these using a single calculator
+command. 
+
+Each story tends to be written from the user’s perspective and follows the format: “As [a user
+persona], I want [to perform this action] so that [I can accomplish this goal].” Note, this does not
+describe exactly how this functionality is to be implemented, but rather what a user is hoping to
+achieve and why. Note that in SpecFlow, Features are written in such a way as to map one-to-one to
+User Stories—with minor formatting differences.
+
+When we’re decomposing software systems into its required functionality, there is a variety of
+terminology used. It’s important for us to be clear about the following terms when describing our
+systems.

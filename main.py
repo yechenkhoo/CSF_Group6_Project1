@@ -404,10 +404,6 @@ def do_extract_image_region(
 
     total_payload_bits = hdr.payload_len * 8
     slots_for_payload = (total_payload_bits + lsb - 1) // lsb
-
-    if slots_for_hdr + slots_for_payload > len(idx):
-        raise ValueError("Not enough capacity to read payload from selected region")
-
     sel_pl = idx[slots_for_hdr : slots_for_hdr + slots_for_payload].astype(np.int64)
     vals_pl = (flat[sel_pl] & ((1 << lsb) - 1)).astype(np.uint16)
     pay_bits = unpack_stream_from_lsb(vals_pl, total_payload_bits, lsb)
@@ -975,88 +971,71 @@ def _save_video_with_stream_data(input_path: str, output_path: str, stream_type:
 
 
 def do_embed_video(cover_path: str, payload_path: str, out_path: str, key: str, lsb: int, frame_step: int = 10):
-    """Embed payload into a video by modifying LSBs of selected frames (every frame_step frames).
-
-    The output is encoded losslessly (libx264rgb -crf 0) to preserve embedded bits.
-    """
+    """Embed payload into a video by modifying LSBs of selected frames."""
     if lsb < 1 or lsb > 8:
-        raise ValueError("lsb must be 1..8 for video as well")
+        raise ValueError("LSB value must be between 1 and 8.")
 
-    frames, meta = _iter_video_frames(cover_path)
-    if not frames:
-        raise ValueError("No frames found in video")
+    all_frames, meta = _iter_video_frames(cover_path)
+    if not all_frames:
+        raise ValueError("No frames found in the video.")
 
-    frame_shapes = [f.shape for f in frames]  # list of (H, W, 3)
-    seed = seed_from_key(key)
+    # 1. Select frames for embedding
+    selected_frame_indices = list(range(0, len(all_frames), max(1, frame_step)))
+    if not selected_frame_indices:
+        raise ValueError("Frame step is too large; no frames were selected.")
 
+    # 2. Calculate true capacity based ONLY on selected frames
+    total_available_slots = sum(all_frames[i].size for i in selected_frame_indices)
+    
+    # 3. Prepare payload and header
     payload = open(payload_path, "rb").read()
     header = Header(MAGIC, VERSION, COV_VIDEO, lsb, len(payload), hashlib.sha256(payload).digest())
-    header_bytes = header.pack()
-
-    header_bits  = bytes_to_bits(header_bytes)
+    header_bits = bytes_to_bits(header.pack())
     payload_bits = bytes_to_bits(payload)
 
-    hdr_chunks, hdr_slots = pack_stream_for_lsb(header_bits,  lsb)
-    pl_chunks,  pl_slots  = pack_stream_for_lsb(payload_bits, lsb)
+    hdr_chunks, hdr_slots = pack_stream_for_lsb(header_bits, lsb)
+    pl_chunks, pl_slots = pack_stream_for_lsb(payload_bits, lsb)
+    total_slots_needed = hdr_slots + pl_slots
 
-    chunks = np.concatenate([hdr_chunks, pl_chunks])  # safe: starts payload on next slot
-    needed_slots = chunks.size
+    # 4. Check if the payload fits
+    if total_slots_needed > total_available_slots:
+        needed_bytes = (total_slots_needed * lsb + 7) // 8
+        capacity_bytes = (total_available_slots * lsb) // 8
+        raise ValueError(
+            f"Payload is too large. Requires ~{needed_bytes:,} bytes but available "
+            f"capacity in selected frames is only {capacity_bytes:,} bytes."
+        )
 
-    # Capacity
-    selected_frames, per_frame_idx, global_perm, total_slots = _video_traversal_indices_for_frames(
-        frame_shapes, lsb, seed, frame_step
-    )
-    if needed_slots > total_slots:
-        need = (needed_slots * lsb + 7) // 8
-        cap = (total_slots * lsb) // 8
-        raise ValueError(f"Payload requires ~{need} bytes but capacity is {cap} bytes across selected frames.")
-
-    # Map global permutation to (frame, local_index)
+    # 5. Create a flat view of only the selected frames' data
+    # and a global permutation for embedding
+    target_data = np.concatenate([all_frames[i].ravel() for i in selected_frame_indices])
+    
+    seed = seed_from_key(key)
+    traversal = traversal_indices(total_available_slots, seed)
+    
+    # 6. Embed data
     mask = np.uint8(0xFF ^ ((1 << lsb) - 1))
-    remaining = needed_slots
-    cursor = 0
-    # Precompute cumulative sizes
-    per_frame_sizes = [idx.size for idx in per_frame_idx]
-    cum_sizes = np.cumsum([0] + per_frame_sizes)
-
-    # Apply writes
-    for i, frame_number in enumerate(selected_frames):
-        start_global = cum_sizes[i]
-        end_global = cum_sizes[i + 1]
-        # Among the global permutation, find positions that fall into this frame's slot range
-        in_frame_mask = (global_perm < end_global) & (global_perm >= start_global)
-        picks = global_perm[in_frame_mask] - start_global
-        if picks.size == 0:
-            continue
-        apply_count = min(picks.size, remaining)
-        if apply_count <= 0:
-            break
-        # Ensure picks are integers and within bounds
-        picks_subset = picks[:apply_count].astype(np.int64)
-        flat_indices = picks_subset  # per_frame_idx[i] is just np.arange(n), so picks_subset are the actual indices
-        frame = frames[frame_number]
-        flat = frame.reshape(-1)
-        flat[flat_indices] = (flat[flat_indices] & mask) | chunks[cursor : cursor + apply_count].astype(np.uint8)
-        frames[frame_number] = flat.reshape(frame.shape)
-        cursor += apply_count
-        remaining -= apply_count
-        if remaining <= 0:
-            break
-
-    # Save stego video
-    _save_video_frames_rgb(out_path, (frames[j] for j in range(len(frames))), fps=meta["fps"])
     
-    # Get file sizes for comparison
-    original_size = os.path.getsize(cover_path)
-    stego_size = os.path.getsize(out_path)
-    size_change = stego_size - original_size
-    size_change_pct = (size_change / original_size * 100) if original_size > 0 else 0
+    # Embed header
+    hdr_indices = traversal[:hdr_slots]
+    target_data[hdr_indices] = (target_data[hdr_indices] & mask) | hdr_chunks.astype(np.uint8)
     
-    print(f"Embedded {len(payload)} bytes into video (frame-based) -> {out_path}")
-    print(f"Original file: {original_size:,} bytes")
-    print(f"Stego file: {stego_size:,} bytes") 
-    print(f"Size change: {size_change:+,} bytes ({size_change_pct:+.2f}%)")
-    print(f"Capacity used: {needed_slots}/{total_slots} slots ({needed_slots/total_slots*100:.2f}%)")
+    # Embed payload
+    pl_indices = traversal[hdr_slots:total_slots_needed]
+    target_data[pl_indices] = (target_data[pl_indices] & mask) | pl_chunks.astype(np.uint8)
+
+    # 7. Reconstruct the modified frames
+    stego_frames = [f.copy() for f in all_frames]
+    current_pos = 0
+    for i in selected_frame_indices:
+        frame_size = all_frames[i].size
+        modified_flat_frame = target_data[current_pos : current_pos + frame_size]
+        stego_frames[i] = modified_flat_frame.reshape(all_frames[i].shape)
+        current_pos += frame_size
+
+    # 8. Save the new video
+    _save_video_frames_rgb(out_path, stego_frames, meta["fps"])
+    print(f"Embedded {len(payload)} bytes into {len(selected_frame_indices)} video frames -> {out_path}")
 
 
 def do_extract_video(stego_path: str, out_payload_path: str, key: str, lsb: int, frame_step: int = 10):
