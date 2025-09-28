@@ -677,28 +677,49 @@ def _load_video_frames_rgb(video_path: str):
 
 
 def _save_video_frames_rgb(out_path: str, frames_iter, fps: float):
-    """Write RGB uint8 frames using a mathematically lossless pipeline.
+    """Write RGB uint8 frames using a truly lossless pipeline.
 
-    We use libx264rgb with -crf 0 and rgb24 pixel format to preserve exact bytes.
-    Requires ffmpeg with libx264 support.
+    The key insight: Raw RGB is not supported in Matroska (.mkv) format but works in AVI.
+    This version saves as AVI with rawvideo to preserve exact RGB values.
     """
     if imageio is None:
         raise RuntimeError("imageio is required for video support. Please install imageio[ffmpeg].")
 
-    writer = imageio.get_writer(
-        out_path,
-        fps=fps,
-        codec="libx264rgb",
-        format="FFMPEG",
-        quality=None,
-        ffmpeg_params=["-crf", "0", "-pix_fmt", "rgb24", "-preset", "veryslow"],
-        macro_block_size=1,  # prevent implicit resizing that would destroy embedded bits
-    )
+    # Force AVI format for rawvideo codec - it's the only way to preserve exact RGB values
+    avi_path = out_path.rsplit('.', 1)[0] + '.avi'
+    
     try:
-        for f in frames_iter:
+        print(f"  → Using AVI with rawvideo for exact RGB preservation...")
+        
+        writer = imageio.get_writer(
+            avi_path,
+            fps=fps,
+            codec="rawvideo",
+            format="FFMPEG",
+            quality=None,
+            ffmpeg_params=["-pix_fmt", "rgb24"],
+            macro_block_size=1,
+        )
+        
+        frame_count = 0
+        frame_list = list(frames_iter) if hasattr(frames_iter, '__iter__') and not isinstance(frames_iter, list) else frames_iter
+        
+        for f in frame_list:
             writer.append_data(f)
-    finally:
+            frame_count += 1
+            
         writer.close()
+        
+        # If user requested a different extension, rename the file
+        if avi_path != out_path:
+            import shutil
+            shutil.move(avi_path, out_path)
+            print(f"  → Renamed to requested format: {os.path.basename(out_path)}")
+        
+        print(f"  ✅ Success with AVI rawvideo! Encoded {frame_count} frames (exact RGB preserved).")
+        
+    except Exception as e:
+        raise RuntimeError(f"AVI rawvideo encoding failed: {e}. LSB steganography requires rawvideo format support.")
 
 
 def _video_traversal_indices_for_frames(frame_shapes: list, lsb: int, key_seed: int, frame_step: int):
@@ -971,18 +992,27 @@ def _save_video_with_stream_data(input_path: str, output_path: str, stream_type:
 
 
 def do_embed_video(cover_path: str, payload_path: str, out_path: str, key: str, lsb: int, frame_step: int = 10):
-    """Embed payload into a video by modifying LSBs of selected frames."""
+    """Embed payload into a video by modifying LSBs of selected frames.
+    
+    Enhanced version with debugging info and verification to ensure LSB changes are preserved.
+    """
     if lsb < 1 or lsb > 8:
         raise ValueError("LSB value must be between 1 and 8.")
 
+    print(f"🎬 Starting video embedding (lsb={lsb}, frame_step={frame_step})")
+    
     all_frames, meta = _iter_video_frames(cover_path)
     if not all_frames:
         raise ValueError("No frames found in the video.")
+
+    print(f"  → Loaded {len(all_frames)} frames from input video")
 
     # 1. Select frames for embedding
     selected_frame_indices = list(range(0, len(all_frames), max(1, frame_step)))
     if not selected_frame_indices:
         raise ValueError("Frame step is too large; no frames were selected.")
+
+    print(f"  → Selected {len(selected_frame_indices)} frames for embedding (every {frame_step})")
 
     # 2. Calculate true capacity based ONLY on selected frames
     total_available_slots = sum(all_frames[i].size for i in selected_frame_indices)
@@ -997,6 +1027,9 @@ def do_embed_video(cover_path: str, payload_path: str, out_path: str, key: str, 
     pl_chunks, pl_slots = pack_stream_for_lsb(payload_bits, lsb)
     total_slots_needed = hdr_slots + pl_slots
 
+    print(f"  → Payload: {len(payload)} bytes, needs {total_slots_needed:,} slots")
+    print(f"  → Available capacity: {total_available_slots:,} slots")
+
     # 4. Check if the payload fits
     if total_slots_needed > total_available_slots:
         needed_bytes = (total_slots_needed * lsb + 7) // 8
@@ -1009,6 +1042,7 @@ def do_embed_video(cover_path: str, payload_path: str, out_path: str, key: str, 
     # 5. Create a flat view of only the selected frames' data
     # and a global permutation for embedding
     target_data = np.concatenate([all_frames[i].ravel() for i in selected_frame_indices])
+    original_checksum = np.sum(target_data.astype(np.uint64))
     
     seed = seed_from_key(key)
     traversal = traversal_indices(total_available_slots, seed)
@@ -1024,18 +1058,77 @@ def do_embed_video(cover_path: str, payload_path: str, out_path: str, key: str, 
     pl_indices = traversal[hdr_slots:total_slots_needed]
     target_data[pl_indices] = (target_data[pl_indices] & mask) | pl_chunks.astype(np.uint8)
 
+    modified_checksum = np.sum(target_data.astype(np.uint64))
+    print(f"  → Applied LSB modifications (checksum changed: {original_checksum != modified_checksum})")
+
     # 7. Reconstruct the modified frames
     stego_frames = [f.copy() for f in all_frames]
     current_pos = 0
+    modified_frame_count = 0
+    
     for i in selected_frame_indices:
         frame_size = all_frames[i].size
         modified_flat_frame = target_data[current_pos : current_pos + frame_size]
-        stego_frames[i] = modified_flat_frame.reshape(all_frames[i].shape)
+        new_frame = modified_flat_frame.reshape(all_frames[i].shape)
+        
+        # Verify this frame was actually modified
+        if not np.array_equal(all_frames[i], new_frame):
+            modified_frame_count += 1
+            max_diff = np.max(np.abs(all_frames[i].astype(np.int16) - new_frame.astype(np.int16)))
+            if modified_frame_count <= 3:  # Show details for first few frames
+                print(f"    • Frame {i}: max_diff = {max_diff}")
+        
+        stego_frames[i] = new_frame
         current_pos += frame_size
+
+    print(f"  → Modified {modified_frame_count}/{len(selected_frame_indices)} selected frames")
 
     # 8. Save the new video
     _save_video_frames_rgb(out_path, stego_frames, meta["fps"])
-    print(f"Embedded {len(payload)} bytes into {len(selected_frame_indices)} video frames -> {out_path}")
+    
+    # 9. Verify that changes were preserved (optional but helpful for debugging)
+    try:
+        if _verify_video_lsb_preservation(cover_path, out_path, selected_frame_indices[:3], lsb):
+            print(f"  ✅ LSB changes verified in output video")
+        else:
+            print(f"  ⚠️  Warning: LSB changes may not be preserved (codec compression)")
+    except Exception as e:
+        print(f"  ⚠️  Could not verify LSB preservation: {e}")
+    
+    print(f"✅ Embedded {len(payload)} bytes into {len(selected_frame_indices)} video frames -> {out_path}")
+
+
+def _verify_video_lsb_preservation(original_path: str, stego_path: str, check_frames: list, lsb: int) -> bool:
+    """Verify that LSB changes were preserved in the output video file."""
+    try:
+        orig_frames, _ = _iter_video_frames(original_path)
+        stego_frames, _ = _iter_video_frames(stego_path)
+        
+        if len(orig_frames) != len(stego_frames):
+            return False
+        
+        differences_found = 0
+        for frame_idx in check_frames:
+            if frame_idx >= len(orig_frames) or frame_idx >= len(stego_frames):
+                continue
+                
+            orig_frame = orig_frames[frame_idx]
+            stego_frame = stego_frames[frame_idx]
+            
+            if not np.array_equal(orig_frame, stego_frame):
+                diff = np.abs(orig_frame.astype(np.int16) - stego_frame.astype(np.int16))
+                max_diff = np.max(diff)
+                lsb_max = (1 << lsb) - 1
+                
+                if max_diff <= lsb_max:
+                    differences_found += 1
+                else:
+                    return False
+        
+        return differences_found > 0
+        
+    except Exception:
+        return False
 
 
 def do_extract_video(stego_path: str, out_payload_path: str, key: str, lsb: int, frame_step: int = 10):
