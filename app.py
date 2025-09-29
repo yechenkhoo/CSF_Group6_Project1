@@ -358,58 +358,68 @@ def show_video_stream_analysis(video_path, stream_type, stream_index, lsb=2):
         st.error(f"Could not generate stream analysis: {e}")
         return None
     
-def plot_image_lsb_distribution(orig_path, stego_path, lsb=1):
-    orig = np.array(Image.open(orig_path).convert("RGB"), dtype=np.uint8)
-    stego = np.array(Image.open(stego_path).convert("RGB"), dtype=np.uint8)
-    mask = (1 << lsb) - 1
-    orig_lsb = orig & mask
-    stego_lsb = stego & mask
-
-    orig_flat = orig_lsb.ravel()
-    stego_flat = stego_lsb.ravel()
-
-    fig, axs = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
-
-    axs[0].hist(orig_flat, bins=mask+1, range=(0, mask), color='blue', alpha=0.7)
-    axs[0].set_title("Original Image LSB Histogram")
-    axs[0].set_xlabel("LSB Value")
-    axs[0].set_ylabel("Frequency")
-
-    axs[1].hist(stego_flat, bins=mask+1, range=(0, mask), color='orange', alpha=0.7)
-    axs[1].set_title("Stego Image LSB Histogram")
-    axs[1].set_xlabel("LSB Value")
-
-    plt.tight_layout()
-    st.pyplot(fig)
-    plt.close(fig)
-
-def plot_audio_lsb_distribution(orig_path, stego_path, lsb=1):
-    def read_wave(path):
-        with wave.open(path, "rb") as wf:
-            return np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
-
-    arr_orig = read_wave(orig_path)
-    arr_stego = read_wave(stego_path)
-
-    mask = (1 << lsb) - 1
-    orig_lsb = arr_orig & mask
-    stego_lsb = arr_stego & mask
-
-    fig, axs = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
-
-    axs[0].hist(orig_lsb, bins=mask+1, range=(0, mask), color='blue', alpha=0.7)
-    axs[0].set_title("Original Audio LSB Histogram")
-    axs[0].set_xlabel("LSB Value")
-    axs[0].set_ylabel("Frequency")
-
-    axs[1].hist(stego_lsb, bins=mask+1, range=(0, mask), color='orange', alpha=0.7)
-    axs[1].set_title("Stego Audio LSB Histogram")
-    axs[1].set_xlabel("LSB Value")
-
-    plt.tight_layout()
-    st.pyplot(fig)
-    plt.close(fig)
-
+def plot_cover_stego_diff_histograms_streamlit(cover_img: np.ndarray, stego_img: np.ndarray):
+    # Convert to grayscale
+    if cover_img.ndim == 3:
+        cover_gray = np.array(Image.fromarray(cover_img).convert("L"))
+    else:
+        cover_gray = cover_img.copy()
+    
+    if stego_img.ndim == 3:
+        stego_gray = np.array(Image.fromarray(stego_img).convert("L"))
+    else:
+        stego_gray = stego_img.copy()
+    
+    # Crop to smallest common size
+    H = min(cover_gray.shape[0], stego_gray.shape[0])
+    W = min(cover_gray.shape[1], stego_gray.shape[1])
+    cover_gray = cover_gray[:H, :W]
+    stego_gray = stego_gray[:H, :W]
+    
+    # Flatten arrays
+    cover_flat = cover_gray.flatten()
+    stego_flat = stego_gray.flatten()
+    
+    bins = np.arange(257)  # 0-256
+    h_cover, _ = np.histogram(cover_flat, bins=bins)
+    h_stego, _ = np.histogram(stego_flat, bins=bins)
+    
+    # Difference histogram
+    diff_flat = stego_gray.astype(int) - cover_gray.astype(int)
+    diff_flat = diff_flat.flatten()
+    diff_bins = np.arange(-256, 257)
+    h_diff, _ = np.histogram(diff_flat, bins=diff_bins)
+    
+    # --- Cover histogram ---
+    fig1, ax1 = plt.subplots(figsize=(6,4))
+    ax1.bar(bins[:-1], h_cover, color='blue')
+    ax1.set_title("Cover Image Histogram")
+    ax1.set_xlabel("Pixel Value")
+    ax1.set_ylabel("Frequency")
+    ax1.set_xlim(0,255)
+    st.pyplot(fig1)
+    plt.close(fig1)
+    
+    # --- Stego histogram ---
+    fig2, ax2 = plt.subplots(figsize=(6,4))
+    ax2.bar(bins[:-1], h_stego, color='red')
+    ax2.set_title("Stego Image Histogram")
+    ax2.set_xlabel("Pixel Value")
+    ax2.set_ylabel("Frequency")
+    ax2.set_xlim(0,255)
+    st.pyplot(fig2)
+    plt.close(fig2)
+    
+    # --- Difference histogram ---
+    fig3, ax3 = plt.subplots(figsize=(6,4))
+    colors = ['blue' if v < 0 else 'red' if v > 0 else 'grey' for v in diff_bins[:-1]]
+    ax3.bar(diff_bins[:-1], h_diff, color=colors)
+    ax3.set_title("Difference Histogram (Stego - Cover)")
+    ax3.set_xlabel("Pixel Difference")
+    ax3.set_ylabel("Frequency")
+    ax3.set_xlim(-10,10)  # focus around typical LSB changes
+    st.pyplot(fig3)
+    plt.close(fig3)
 
 def encode_ui():
     st.subheader("Encode: Hide a payload inside a cover")
@@ -695,9 +705,12 @@ def encode_ui():
 
                     # Histogram of pixel differences
                     try:
-                        plot_image_lsb_distribution(cover_path, out_path, lsb=lsb)
+                        cover_arr = np.array(Image.open(cover_path).convert("RGB"))
+                        stego_arr = np.array(Image.open(out_path).convert("RGB"))
+                        plot_cover_stego_diff_histograms_streamlit(cover_arr, stego_arr)
+
                     except Exception as e:
-                        st.warning(f"Could not generate difference histogram: {e}")
+                        st.warning(f"Could not generate pixel-difference histogram: {e}")
 
                     # Download
                     with open(out_path, "rb") as f:
@@ -741,12 +754,6 @@ def encode_ui():
                             f,
                             file_name=os.path.basename(out_path),
                         )
-
-                    # Histogram of audio differences
-                    try:
-                        plot_audio_lsb_distribution(cover_path, out_path, lsb=lsb)
-                    except Exception as e:
-                        st.warning(f"Could not generate audio difference histogram: {e}")
 
                 elif cov_ext in SUPPORTED_VIDEO_EXTS and ext_choice == ".mp4":
                     # Check which video method was selected
