@@ -1101,8 +1101,8 @@ def do_embed_video_iframe(cover_path: str, payload_path: str, out_path: str, key
     - Creates frame-dependent artifacts only in I-frames
     - Completely independent from stream-based methods
     """
-    if lsb < 1 or lsb > 6:  # Different limit for iframe-only
-        raise ValueError("LSB value must be between 1 and 6 for iframe-only encoding.")
+    if lsb < 1 or lsb > 8:  # Different limit for iframe-only
+        raise ValueError("LSB value must be between 1 and 8 for iframe-only encoding.")
 
     print("🎬 IFRAME-ONLY ENCODING: Loading video for I-frame-only embedding...")
     all_frames, meta = _iter_video_frames(cover_path)
