@@ -1240,6 +1240,77 @@ def decode_ui():
                 try:
                     if out_label.lower().endswith((".png", ".bmp", ".jpg", ".jpeg")):
                         st.image(data, caption="Extracted image preview")
+                    elif out_label.lower().endswith((".mp4", ".mov", ".mkv", ".avi")):
+                        # Preview for extracted MP4 files
+                        st.subheader("🎬 Extracted Video Preview")
+                        st.video(data, start_time=0)
+                        st.info(f"Video file extracted: {len(data):,} bytes")
+                        try:
+                            # Show video file info if possible
+                            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as temp_video:
+                                temp_video.write(data)
+                                temp_video.flush()
+                                temp_video_path = temp_video.name
+                            try:
+                                video_frames, video_meta = _iter_video_frames(temp_video_path)
+                                if video_frames and video_meta:
+                                    st.write(f"**Video Info:** {len(video_frames)} frames, {video_meta.get('fps', 'Unknown')} FPS")
+                                    # Show first frame as thumbnail
+                                    if len(video_frames) > 0:
+                                        st.image(video_frames[0], caption="First frame", width=300)
+                            except Exception:
+                                st.write("Video preview available above")
+                            finally:
+                                os.unlink(temp_video_path)
+                        except Exception:
+                            st.write("Video preview available above")
+                    elif out_label.lower().endswith((".wav", ".mp3", ".m4a", ".flac")):
+                        # Preview for extracted WAV/audio files
+                        st.subheader("🎵 Extracted Audio Preview")
+                        st.audio(data, format="audio/wav", start_time=0)
+                        st.info(f"Audio file extracted: {len(data):,} bytes")
+                        try:
+                            # Show audio file info if possible for WAV files
+                            if out_label.lower().endswith(".wav"):
+                                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
+                                    temp_audio.write(data)
+                                    temp_audio.flush()
+                                    temp_audio_path = temp_audio.name
+                                try:
+                                    with wave.open(temp_audio_path, "rb") as wf:
+                                        sample_rate = wf.getframerate()
+                                        n_channels = wf.getnchannels()
+                                        n_frames = wf.getnframes()
+                                        duration = n_frames / sample_rate if sample_rate > 0 else 0
+                                        sample_width = wf.getsampwidth()
+                                    st.write(f"**Audio Info:** {duration:.2f}s, {sample_rate}Hz, {n_channels} channel(s), {sample_width*8}-bit")
+                                    
+                                    # Show audio waveform preview
+                                    if n_frames > 0 and n_frames < 500000:  # Only for reasonable size files
+                                        try:
+                                            with wave.open(temp_audio_path, "rb") as wf:
+                                                raw = wf.readframes(min(n_frames, 50000))  # First 50k samples max
+                                            samples = np.frombuffer(raw, dtype=np.int16)
+                                            if n_channels > 1:
+                                                samples = samples[::n_channels]  # Take first channel
+                                            
+                                            time_axis = np.linspace(0, len(samples) / sample_rate, len(samples))
+                                            fig, ax = plt.subplots(figsize=(10, 3))
+                                            ax.plot(time_axis, samples, color='blue', alpha=0.7, linewidth=0.5)
+                                            ax.set_xlabel('Time (seconds)')
+                                            ax.set_ylabel('Amplitude')
+                                            ax.set_title('Extracted Audio Waveform Preview')
+                                            ax.grid(True, alpha=0.3)
+                                            st.pyplot(fig)
+                                            plt.close(fig)
+                                        except Exception:
+                                            pass  # Skip waveform if it fails
+                                except Exception:
+                                    st.write("Audio preview available above")
+                                finally:
+                                    os.unlink(temp_audio_path)
+                        except Exception:
+                            st.write("Audio preview available above")
                     elif (
                         out_label.lower().endswith((".txt", ".md", ".json", ".py"))
                         and len(data) < 200_000

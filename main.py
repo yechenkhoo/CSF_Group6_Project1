@@ -318,6 +318,53 @@ def do_embed_image(
     print(f"Embedded {len(payload)} bytes into image -> {out_path}")
 
 
+def show_file_preview(file_path):
+    """Show preview of extracted file if it's MP4 or WAV"""
+    if not os.path.exists(file_path):
+        return
+    
+    file_ext = os.path.splitext(file_path)[1].lower()
+    file_size = os.path.getsize(file_path)
+    
+    print(f"📄 Extracted file: {os.path.basename(file_path)} ({file_size:,} bytes)")
+    
+    if file_ext in [".mp4", ".mov", ".mkv", ".avi"]:
+        print("🎬 Video file detected - attempting to show preview info...")
+        try:
+            # Try to get video info
+            frames, meta = _iter_video_frames(file_path)
+            if frames and meta:
+                n_frames = len(frames)
+                fps = meta.get('fps', 'Unknown')
+                duration = n_frames / fps if isinstance(fps, (int, float)) and fps > 0 else 'Unknown'
+                print(f"   📹 Video info: {n_frames} frames, {fps} FPS")
+                if duration != 'Unknown':
+                    print(f"   ⏱️  Duration: {duration:.2f} seconds")
+                print(f"   💡 Open with your video player to view: {file_path}")
+            else:
+                print(f"   💡 Video file ready - open with your video player: {file_path}")
+        except Exception as e:
+            print(f"   💡 Video file ready - open with your video player: {file_path}")
+            
+    elif file_ext in [".wav", ".mp3", ".m4a", ".flac"]:
+        print("🎵 Audio file detected - attempting to show preview info...")
+        try:
+            if file_ext == ".wav":
+                # Try to get WAV info
+                with wave.open(file_path, "rb") as wf:
+                    sample_rate = wf.getframerate()
+                    n_channels = wf.getnchannels()
+                    n_frames = wf.getnframes()
+                    duration = n_frames / sample_rate if sample_rate > 0 else 0
+                    sample_width = wf.getsampwidth()
+                print(f"   🎼 Audio info: {duration:.2f}s, {sample_rate}Hz, {n_channels} channel(s), {sample_width*8}-bit")
+            print(f"   💡 Open with your audio player to listen: {file_path}")
+        except Exception as e:
+            print(f"   💡 Audio file ready - open with your audio player: {file_path}")
+    else:
+        print(f"   💡 File ready: {file_path}")
+
+
 def do_extract_image(stego_path: str, out_payload_path: str, key: str, lsb: int):
     img, shape, mode = load_image_bytes(stego_path)
     flat = img.reshape(-1)
@@ -348,6 +395,9 @@ def do_extract_image(stego_path: str, out_payload_path: str, key: str, lsb: int)
 
     open(out_payload_path, "wb").write(payload)
     print(f"Extracted {len(payload)} bytes from image -> {out_payload_path}")
+    
+    # Show preview if it's MP4 or WAV
+    show_file_preview(out_payload_path)
 
 
 def do_embed_image_region(cover_path: str, payload_path: str, out_path: str, key: str, lsb: int, region=None):
@@ -448,6 +498,9 @@ def do_extract_image_region(
     print(
         f"Extracted {len(payload)} bytes from image{region_info} -> {out_payload_path}"
     )
+    
+    # Show preview if it's MP4 or WAV
+    show_file_preview(out_payload_path)
 
 
 def do_embed_audio(cover_path, payload_path, out_path, key, lsb):
@@ -511,6 +564,9 @@ def do_extract_audio(stego_path: str, out_payload_path: str, key: str, lsb: int)
 
     open(out_payload_path, "wb").write(payload)
     print(f"Extracted {len(payload)} bytes from audio -> {out_payload_path}")
+    
+    # Show preview if it's MP4 or WAV
+    show_file_preview(out_payload_path)
 
 
 def do_embed_audio_region(
@@ -625,6 +681,9 @@ def do_extract_audio_region(
         if time_range else ""
     )
     print(f"Extracted {len(payload)} bytes from audio{time_info} -> {out_payload_path}")
+    
+    # Show preview if it's MP4 or WAV
+    show_file_preview(out_payload_path)
 
 
 # ---------- CLI ----------
@@ -1330,6 +1389,9 @@ def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, ls
 
     print(f"🎬 IFRAME-ONLY EXTRACTION COMPLETE: {len(payload_bytes)} bytes -> {out_payload_path}")
     print(f"✅ Payload integrity verified (blue-channel distribution)")
+    
+    # Show preview if it's MP4 or WAV
+    show_file_preview(out_payload_path)
 
 
 def do_embed_video_stream(cover_path: str, payload_path: str, out_path: str, key: str, lsb: int):
@@ -1783,6 +1845,9 @@ def do_extract_video_stream(stego_path: str, out_payload_path: str, key: str, ls
     print(f"   📦 Extracted {len(payload)} bytes -> {out_payload_path}")
     print(f"   🔐 Payload integrity verified")
     print(f"   🎬 Stream-based extraction successful")
+    
+    # Show preview if it's MP4 or WAV
+    show_file_preview(out_payload_path)
 
 
 def do_extract_video_stream_legacy(stego_path: str, out_payload_path: str, key: str, lsb: int):
@@ -1848,5 +1913,8 @@ def do_extract_video_stream_legacy(stego_path: str, out_payload_path: str, key: 
 
     open(out_payload_path, "wb").write(payload)
     print(f"✅ Extracted {len(payload)} bytes from video stream -> {out_payload_path} (legacy method)")
+    
+    # Show preview if it's MP4 or WAV
+    show_file_preview(out_payload_path)
 
 
