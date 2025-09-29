@@ -1101,8 +1101,8 @@ def do_embed_video_iframe(cover_path: str, payload_path: str, out_path: str, key
     - Creates frame-dependent artifacts only in I-frames
     - Completely independent from stream-based methods
     """
-    if lsb < 1 or lsb > 6:  # Different limit for iframe-only
-        raise ValueError("LSB value must be between 1 and 6 for iframe-only encoding.")
+    if lsb < 1 or lsb > 8:  # Different limit for iframe-only
+        raise ValueError("LSB value must be between 1 and 8 for iframe-only encoding.")
 
     print("🎬 IFRAME-ONLY ENCODING: Loading video for I-frame-only embedding...")
     all_frames, meta = _iter_video_frames(cover_path)
@@ -1300,8 +1300,8 @@ def do_extract_video(stego_path: str, out_payload_path: str, key: str, lsb: int,
 
 def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, lsb: int, frame_step: int = 10):
     """Extract payload from IFRAME-ONLY embedded stego video with I-frame-specific pattern recognition."""
-    if lsb < 1 or lsb > 6:  # Match the iframe embedding limit
-        raise ValueError("LSB must be 1-6 for iframe-only extraction")
+    if lsb < 1 or lsb > 8:  # Match the iframe embedding limit
+        raise ValueError("LSB must be 1-8 for iframe-only extraction")
 
     print("🎬 IFRAME-ONLY EXTRACTION: Loading stego video I-frames...")
     all_frames, meta = _iter_video_frames(stego_path)
