@@ -8,6 +8,9 @@ MAGIC = b"INF2"
 VERSION = 1
 COV_IMAGE = 0
 COV_AUDIO = 1
+COV_VIDEO = 2
+COV_VIDEO_STREAM = 3
+COV_MP4_OPTIMIZED = 10  # New optimized MP4 embedding
 
 
 @dataclass
@@ -73,12 +76,29 @@ def bytes_to_bits(data: bytes) -> np.ndarray:
     return bits
 
 
-def bits_to_bytes(bits: np.ndarray) -> bytes:
-    # pad to multiple of 8
-    if bits.size % 8 != 0:
-        pad = 8 - (bits.size % 8)
-        bits = np.concatenate([bits, np.zeros(pad, dtype=np.uint8)])
-    return np.packbits(bits).tobytes()
+def bits_to_bytes(bits) -> bytes:
+    """Convert bits array to bytes. Compatible with both numpy arrays and lists."""
+    # Handle both numpy arrays and plain lists
+    if hasattr(bits, 'size'):
+        # numpy array
+        if bits.size % 8 != 0:
+            pad = 8 - (bits.size % 8)
+            bits = np.concatenate([bits, np.zeros(pad, dtype=np.uint8)])
+        return np.packbits(bits).tobytes()
+    else:
+        # plain list
+        if len(bits) % 8 != 0:
+            pad = 8 - (len(bits) % 8)
+            bits = bits + [0] * pad
+        
+        result = []
+        for i in range(0, len(bits), 8):
+            byte = 0
+            for j in range(8):
+                if i + j < len(bits):
+                    byte |= bits[i + j] << (7 - j)
+            result.append(byte)
+        return bytes(result)
 
 
 def pack_stream_for_lsb(bitstream: np.ndarray, lsb: int) -> Tuple[np.ndarray, int]:
@@ -99,15 +119,26 @@ def pack_stream_for_lsb(bitstream: np.ndarray, lsb: int) -> Tuple[np.ndarray, in
     return vals, vals.size
 
 
-def unpack_stream_from_lsb(vals: np.ndarray, total_bits: int, lsb: int) -> np.ndarray:
-    """Inverse of pack_stream_for_lsb."""
-    # vals are in [0 .. (1<<lsb)-1]
-    out = np.zeros((vals.size, lsb), dtype=np.uint8)
-    for i in range(lsb):
-        shift = lsb - 1 - i
-        out[:, i] = (vals >> shift) & 1
-    bits = out.reshape(-1)
-    return bits[:total_bits]
+def unpack_stream_from_lsb(vals, total_bits: int, lsb: int):
+    """Inverse of pack_stream_for_lsb. Compatible with both numpy arrays and lists."""
+    # Handle both numpy arrays and plain lists
+    if hasattr(vals, 'size'):
+        # numpy array
+        out = np.zeros((vals.size, lsb), dtype=np.uint8)
+        for i in range(lsb):
+            shift = lsb - 1 - i
+            out[:, i] = (vals >> shift) & 1
+        bits = out.reshape(-1)
+        return bits[:total_bits]
+    else:
+        # plain list
+        bits = []
+        for val in vals:
+            for i in range(lsb):
+                if len(bits) < total_bits:
+                    shift = lsb - 1 - i
+                    bits.append((val >> shift) & 1)
+        return bits[:total_bits]
 
 
 # ---------- Capacity ----------
@@ -598,24 +629,53 @@ def do_extract_audio_region(
 
 # ---------- CLI ----------
 def main():
-    p = argparse.ArgumentParser(description="Minimal LSB stego CLI (image/audio)")
+    p = argparse.ArgumentParser(description="Advanced LSB stego CLI (image/audio/video)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     e = sub.add_parser("encode", help="Embed payload into cover")
-    e.add_argument("--cover", required=True, help="Cover file (.png/.bmp or .wav)")
+    e.add_argument("--cover", required=True, help="Cover file (.png/.bmp/.wav/.mp4)")
     e.add_argument("--payload", required=True, help="Payload file (any bytes)")
     e.add_argument("--out", required=True, help="Output stego file")
     e.add_argument("--key", required=True, help="Key (string)")
-    e.add_argument("--lsb", type=int, default=2, help="LSBs to use (1-8)")
-    # TODO: --region options later: image rectangle or audio sample range
-
+    e.add_argument("--lsb", type=int, default=2, help="LSBs to use (1-8, 1-2 recommended for video)")
+    
     d = sub.add_parser("decode", help="Extract payload from stego")
-    d.add_argument("--stego", required=True, help="Stego file (.png/.bmp or .wav)")
+    d.add_argument("--stego", required=True, help="Stego file (.png/.bmp/.wav/.mp4)")
     d.add_argument("--out", required=True, help="Where to write extracted payload")
     d.add_argument("--key", required=True, help="Key (string)")
     d.add_argument("--lsb", type=int, default=2, help="LSBs used (must match)")
+    
+    c = sub.add_parser("capacity", help="Check embedding capacity of a file")
+    c.add_argument("--file", required=True, help="Media file to check")
+    c.add_argument("--lsb", type=int, default=2, help="LSBs to use")
 
     args = p.parse_args()
+
+    if args.cmd == "capacity":
+        ext = os.path.splitext(args.file)[1].lower()
+        if ext in (".png", ".bmp"):
+            img, shape, mode = load_image_bytes(args.file)
+            capacity = capacity_bits_image(img, args.lsb) // 8
+            print(f"Image capacity: {capacity:,} bytes with {args.lsb} LSB bits")
+        elif ext == ".wav":
+            samples, n_ch, fr = load_wav_int16(args.file)
+            capacity = capacity_bits_audio(samples.view(np.uint16), args.lsb) // 8
+            print(f"Audio capacity: {capacity:,} bytes with {args.lsb} LSB bits")
+        elif ext == ".mp4":
+            try:
+                from mp4_optimizer import get_mp4_capacity_optimized
+                info = get_mp4_capacity_optimized(args.file, args.lsb)
+                if 'error' in info:
+                    print(f"Error: {info['error']}")
+                else:
+                    print(f"MP4 optimized capacity: {info['available_payload_bytes']:,} bytes")
+                    print(f"Embedding locations: {info['embedding_locations']}")
+                    print(f"Total mdat size: {info['mdat_size_bytes']:,} bytes")
+            except ImportError:
+                print("MP4 capacity check not available")
+        else:
+            print("Unsupported file type for capacity check")
+        return
 
     if args.cmd == "encode":
         ext = os.path.splitext(args.cover)[1].lower()
@@ -623,16 +683,32 @@ def main():
             do_embed_image(args.cover, args.payload, args.out, args.key, args.lsb)
         elif ext == ".wav":
             do_embed_audio(args.cover, args.payload, args.out, args.key, args.lsb)
+        elif ext == ".mp4":
+            # Use optimized MP4 embedding
+            try:
+                from mp4_optimizer import do_embed_mp4_optimized
+                do_embed_mp4_optimized(args.cover, args.payload, args.out, args.key, args.lsb)
+            except ImportError:
+                print("MP4 optimizer not available, using fallback method")
+                do_embed_video(args.cover, args.payload, args.out, args.key, args.lsb)
         else:
-            sys.exit("Unsupported cover type. Use PNG/BMP or 16-bit PCM WAV.")
+            sys.exit("Unsupported cover type. Use PNG/BMP, 16-bit PCM WAV, or MP4.")
     else:
         ext = os.path.splitext(args.stego)[1].lower()
         if ext in (".png", ".bmp"):
             do_extract_image(args.stego, args.out, args.key, args.lsb)
         elif ext == ".wav":
             do_extract_audio(args.stego, args.out, args.key, args.lsb)
+        elif ext == ".mp4":
+            # Use optimized MP4 extraction
+            try:
+                from mp4_optimizer import do_extract_mp4_optimized
+                do_extract_mp4_optimized(args.stego, args.out, args.key, args.lsb)
+            except ImportError:
+                print("MP4 optimizer not available, using fallback method")
+                do_extract_video(args.stego, args.out, args.key, args.lsb)
         else:
-            sys.exit("Unsupported stego type. Use PNG/BMP or 16-bit PCM WAV.")
+            sys.exit("Unsupported stego type. Use PNG/BMP, 16-bit PCM WAV, or MP4.")
 
 
 if __name__ == "__main__":
