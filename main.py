@@ -1334,37 +1334,33 @@ def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, ls
     seed = seed_from_key(key + "_iframe_only")  # Must match embedding seed
     mask = (1 << lsb) - 1
 
-    # Extract header first (fixed size)
+    # First extract header to get payload size
     header_bits_needed = HEADER_BYTES * 8
     header_slots_needed = (header_bits_needed + lsb - 1) // lsb
     
     print("   📋 Extracting header from I-frame-only patterns...")
-    header_vals = []
-    chunks_read = 0
     
-    # Process I-frames to extract header using same patterns as embedding
+    # Extract header first
+    header_vals = []
     for frame_idx, global_frame_idx in enumerate(selected_frame_indices):
-        if chunks_read >= header_slots_needed:
+        if len(header_vals) >= header_slots_needed:
             break
             
         frame = all_frames[global_frame_idx]
         h, w, c = frame.shape
         flat = frame.reshape(-1)
         
-        remaining_needed = header_slots_needed - chunks_read
+        remaining_needed = header_slots_needed - len(header_vals)
         max_frame_chunks = min(flat.size // 3, remaining_needed)  # Match embedding 33% usage
         
-        # Match the I-frame embedding pattern logic exactly
-        iframe_pattern_type = frame_idx % 3  # Must match embedding patterns
+        # Match embedding patterns exactly
+        iframe_pattern_type = frame_idx % 3
         
-        if iframe_pattern_type == 0:  # I-FRAME PATTERN 1: DCT Block Boundaries
-            # Must match embedding DCT pattern exactly
+        if iframe_pattern_type == 0:  # DCT Block Boundaries
             dct_indices = []
             block_size = 8
-            
             for y in range(0, h, block_size):
                 for x in range(0, w, block_size):
-                    # Focus on block corners and edges
                     for dy in [0, block_size-1]:
                         for dx in [0, block_size-1]:
                             py, px = y + dy, x + dx
@@ -1373,16 +1369,11 @@ def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, ls
                                     idx = (py * w + px) * c + ch
                                     if idx < flat.size:
                                         dct_indices.append(idx)
-            
             extract_indices = np.array(dct_indices[:max_frame_chunks], dtype=np.int64)
             
-        elif iframe_pattern_type == 1:  # I-FRAME PATTERN 2: Frequency Domain Simulation
-            # Must match embedding frequency pattern exactly
+        elif iframe_pattern_type == 1:  # Frequency Domain
             freq_indices = []
-            
-            # Create a zigzag pattern similar to DCT coefficient ordering
             for diagonal in range(min(h, w)):
-                # Main diagonal traversal
                 for i in range(diagonal + 1):
                     y, x = i, diagonal - i
                     if y < h and x < w:
@@ -1390,8 +1381,6 @@ def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, ls
                             idx = (y * w + x) * c + ch
                             if idx < flat.size:
                                 freq_indices.append(idx)
-                
-                # Anti-diagonal traversal
                 for i in range(diagonal + 1):
                     y, x = diagonal - i, h - 1 - i
                     if y >= 0 and y < h and x >= 0 and x < w:
@@ -1399,28 +1388,21 @@ def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, ls
                             idx = (y * w + x) * c + ch
                             if idx < flat.size:
                                 freq_indices.append(idx)
-            
             extract_indices = np.array(freq_indices[:max_frame_chunks], dtype=np.int64)
             
-        else:  # I-FRAME PATTERN 3: Keyframe Optimization
-            # Must match embedding keyframe pattern exactly
+        else:  # Keyframe Optimization
             keyframe_indices = []
-            
-            # Center region (most important in keyframes)
             center_y, center_x = h//2, w//2
             radius = min(h//4, w//4)
-            
             for y in range(max(0, center_y - radius), min(h, center_y + radius)):
                 for x in range(max(0, center_x - radius), min(w, center_x + radius)):
                     for ch in range(c):
                         idx = (y * w + x) * c + ch
                         if idx < flat.size:
                             keyframe_indices.append(idx)
-            
-            # Add corner regions for motion vector reference points
+            # Corner regions
             corner_size = min(h//8, w//8)
             corners = [(0, 0), (0, w-corner_size), (h-corner_size, 0), (h-corner_size, w-corner_size)]
-            
             for cy, cx in corners:
                 for y in range(cy, min(h, cy + corner_size)):
                     for x in range(cx, min(w, cx + corner_size)):
@@ -1428,39 +1410,34 @@ def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, ls
                             idx = (y * w + x) * c + ch
                             if idx < flat.size:
                                 keyframe_indices.append(idx)
-            
             extract_indices = np.array(keyframe_indices[:max_frame_chunks], dtype=np.int64)
         
-        # Extract data considering enhanced LSB for I-frame patterns
+        # Extract data with correct LSB handling
         if len(extract_indices) > 0:
             chunks_this_frame = min(len(extract_indices), remaining_needed)
             
-            if iframe_pattern_type in [0, 2]:  # DCT and keyframe patterns: enhanced LSB extraction
+            if iframe_pattern_type in [0, 2]:  # DCT and keyframe: enhanced LSB
                 enhanced_lsb = min(lsb + 1, 6)
                 enhanced_mask = (1 << enhanced_lsb) - 1
-                # Extract enhanced LSB values and shift, but ensure we stay within uint8 bounds
                 extracted_vals = (flat[extract_indices[:chunks_this_frame]] & enhanced_mask) >> 1
-                frame_vals = extracted_vals & ((1 << lsb) - 1)  # Mask to original LSB range
-            else:  # Frequency domain pattern: standard LSB
+                frame_vals = extracted_vals & ((1 << lsb) - 1)
+            else:  # Frequency: standard LSB
                 frame_vals = flat[extract_indices[:chunks_this_frame]] & mask
             
-            # Ensure frame_vals are within uint8 range before extending
-            frame_vals_safe = np.array(frame_vals, dtype=np.uint16)  # Use uint16 to be safe
+            frame_vals_safe = np.array(frame_vals, dtype=np.uint16)
             header_vals.extend(frame_vals_safe.tolist())
-            chunks_read += chunks_this_frame
 
     # Parse header
     if len(header_vals) < header_slots_needed:
         raise ValueError(f"Insufficient header data: got {len(header_vals)}, need {header_slots_needed}")
 
-    # Ensure header values are within valid range for the LSB count before converting to uint8
     header_vals_masked = [val & ((1 << lsb) - 1) for val in header_vals[:header_slots_needed]]
     header_chunks = np.array(header_vals_masked, dtype=np.uint8)
     header_bits = unpack_stream_from_lsb(header_chunks, header_bits_needed, lsb)
     header_bytes = bits_to_bytes(header_bits)
     header = Header.unpack(header_bytes)
     
-    print(f"   ✅ Header extracted: {header.payload_len} bytes payload, LSB={header.lsb}")
+    print(f"   ✅ Header extracted: {header.payload_len} bytes payload, LSB={header.lsb_count}")
 
     # Validate header
     if header.magic != MAGIC:
@@ -1470,39 +1447,31 @@ def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, ls
     if header.lsb_count != lsb:
         raise ValueError(f"LSB mismatch: expected {lsb}, got {header.lsb_count}")
 
-    # Extract payload
+    # Now extract all data (header + payload) from beginning
     payload_bits_needed = header.payload_len * 8
     payload_slots_needed = (payload_bits_needed + lsb - 1) // lsb
     total_slots_needed = header_slots_needed + payload_slots_needed
     
     print(f"   📦 Extracting {header.payload_len} byte payload...")
     
-    all_vals = header_vals.copy()  # Start with header values
-    
-    # Continue extraction for payload using same I-frame patterns
+    # Extract ALL data (header + payload) using same patterns
+    all_vals = []
     for frame_idx, global_frame_idx in enumerate(selected_frame_indices):
         if len(all_vals) >= total_slots_needed:
             break
-            
-        # Skip if we already processed this frame for header
-        if chunks_read <= header_slots_needed:
-            chunks_read = len(all_vals)
-            continue
             
         frame = all_frames[global_frame_idx]
         h, w, c = frame.shape
         flat = frame.reshape(-1)
         
         remaining_needed = total_slots_needed - len(all_vals)
-        max_frame_chunks = min(flat.size // 3, remaining_needed)  # Match embedding 33% usage
+        max_frame_chunks = min(flat.size // 3, remaining_needed)
         
-        # Same I-frame pattern extraction logic as embedding
         iframe_pattern_type = frame_idx % 3
         
-        if iframe_pattern_type == 0:  # I-FRAME PATTERN 1: DCT Block Boundaries
+        if iframe_pattern_type == 0:  # DCT Block Boundaries
             dct_indices = []
             block_size = 8
-            
             for y in range(0, h, block_size):
                 for x in range(0, w, block_size):
                     for dy in [0, block_size-1]:
@@ -1513,12 +1482,10 @@ def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, ls
                                     idx = (py * w + px) * c + ch
                                     if idx < flat.size:
                                         dct_indices.append(idx)
-            
             extract_indices = np.array(dct_indices[:max_frame_chunks], dtype=np.int64)
             
-        elif iframe_pattern_type == 1:  # I-FRAME PATTERN 2: Frequency Domain Simulation
+        elif iframe_pattern_type == 1:  # Frequency Domain
             freq_indices = []
-            
             for diagonal in range(min(h, w)):
                 for i in range(diagonal + 1):
                     y, x = i, diagonal - i
@@ -1527,7 +1494,6 @@ def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, ls
                             idx = (y * w + x) * c + ch
                             if idx < flat.size:
                                 freq_indices.append(idx)
-                
                 for i in range(diagonal + 1):
                     y, x = diagonal - i, h - 1 - i
                     if y >= 0 and y < h and x >= 0 and x < w:
@@ -1535,27 +1501,20 @@ def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, ls
                             idx = (y * w + x) * c + ch
                             if idx < flat.size:
                                 freq_indices.append(idx)
-            
             extract_indices = np.array(freq_indices[:max_frame_chunks], dtype=np.int64)
             
-        else:  # I-FRAME PATTERN 3: Keyframe Optimization
+        else:  # Keyframe Optimization
             keyframe_indices = []
-            
-            # Center region
             center_y, center_x = h//2, w//2
             radius = min(h//4, w//4)
-            
             for y in range(max(0, center_y - radius), min(h, center_y + radius)):
                 for x in range(max(0, center_x - radius), min(w, center_x + radius)):
                     for ch in range(c):
                         idx = (y * w + x) * c + ch
                         if idx < flat.size:
                             keyframe_indices.append(idx)
-            
-            # Corner regions
             corner_size = min(h//8, w//8)
             corners = [(0, 0), (0, w-corner_size), (h-corner_size, 0), (h-corner_size, w-corner_size)]
-            
             for cy, cx in corners:
                 for y in range(cy, min(h, cy + corner_size)):
                     for x in range(cx, min(w, cx + corner_size)):
@@ -1563,32 +1522,29 @@ def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, ls
                             idx = (y * w + x) * c + ch
                             if idx < flat.size:
                                 keyframe_indices.append(idx)
-            
             extract_indices = np.array(keyframe_indices[:max_frame_chunks], dtype=np.int64)
         
-        # Extract with I-frame appropriate LSB handling
+        # Extract with same LSB handling as embedding
         if len(extract_indices) > 0:
             chunks_this_frame = min(len(extract_indices), remaining_needed)
             
-            if iframe_pattern_type in [0, 2]:  # DCT and keyframe: enhanced LSB extraction
+            if iframe_pattern_type in [0, 2]:  # DCT and keyframe: enhanced LSB
                 enhanced_lsb = min(lsb + 1, 6)
                 enhanced_mask = (1 << enhanced_lsb) - 1
-                # Extract enhanced LSB values and shift, but ensure we stay within uint8 bounds
                 extracted_vals = (flat[extract_indices[:chunks_this_frame]] & enhanced_mask) >> 1
-                frame_vals = extracted_vals & ((1 << lsb) - 1)  # Mask to original LSB range
-            else:  # Frequency domain: standard LSB
+                frame_vals = extracted_vals & ((1 << lsb) - 1)
+            else:  # Frequency: standard LSB
                 frame_vals = flat[extract_indices[:chunks_this_frame]] & mask
             
-            # Ensure frame_vals are within uint8 range before extending
-            frame_vals_safe = np.array(frame_vals, dtype=np.uint16)  # Use uint16 to be safe
+            frame_vals_safe = np.array(frame_vals, dtype=np.uint16)
             all_vals.extend(frame_vals_safe.tolist())
 
-    # Convert to payload
+    # Check if we have enough data
     if len(all_vals) < total_slots_needed:
         raise ValueError(f"Insufficient data: got {len(all_vals)}, need {total_slots_needed}")
     
+    # Extract payload (skip header)
     payload_vals = all_vals[header_slots_needed:total_slots_needed]
-    # Ensure payload values are within valid range for the LSB count before converting to uint8
     payload_vals_masked = [val & ((1 << lsb) - 1) for val in payload_vals]
     payload_chunks = np.array(payload_vals_masked, dtype=np.uint8)
     payload_bits = unpack_stream_from_lsb(payload_chunks, payload_bits_needed, lsb)
@@ -1638,12 +1594,13 @@ def do_embed_video_stream(cover_path: str, payload_path: str, out_path: str, key
     header = Header(MAGIC, VERSION, COV_VIDEO_STREAM, lsb, len(payload), hashlib.sha256(payload).digest())
     header_bytes = header.pack()
 
-    header_bits  = bytes_to_bits(header_bytes)
+    # Use the same approach as image embedding - simple and reliable
+    header_bits = bytes_to_bits(header_bytes)
     payload_bits = bytes_to_bits(payload)
 
-    hdr_chunks, hdr_slots = pack_stream_for_lsb(header_bits,  lsb)
-    pl_chunks,  pl_slots  = pack_stream_for_lsb(payload_bits, lsb)
-
+    hdr_chunks, hdr_slots = pack_stream_for_lsb(header_bits, lsb)
+    pl_chunks, pl_slots = pack_stream_for_lsb(payload_bits, lsb)
+    
     chunks = np.concatenate([hdr_chunks, pl_chunks])
     needed_slots = chunks.size
 
@@ -1694,7 +1651,7 @@ def do_extract_video_stream(stego_path: str, out_payload_path: str, key: str, ls
     seed = seed_from_key(key)
     idx = traversal_indices(flat.size, seed)
 
-    # First, read header bits
+    # First, read header bits - same as image extraction
     hdr_bits_needed = HEADER_BYTES * 8
     slots_for_hdr = (hdr_bits_needed + lsb - 1) // lsb
     

@@ -745,9 +745,7 @@ def encode_ui():
                                 st.success(f"🎬 IFRAME Size change: {size_change:+,} bytes ({size_change_pct:+.2f}%)")
                         else:
                             st.success("🎬 IFRAME No size change detected")
-                        
-                        st.info("🔑 IFRAME-ONLY encoding uses I-frame specific patterns: DCT blocks, frequency domain, keyframe optimization")
-                        
+                                                
                         # Load stego frames for comparison
                         try:
                             stego_frames, stego_meta = _iter_video_frames(out_path)
@@ -767,7 +765,6 @@ def encode_ui():
                                             if i not in iframe_candidates][:len(iframe_candidates)//2]
                             selected_frames = sorted(iframe_candidates + scatter_frames)
                             
-                            st.info(f"🎞️ Modified {len(selected_frames)} I-frame candidates out of {len(original_frames)} total frames")
                             st.info(f"🔑 I-frame pattern: GOP size {gop_size}, specialized keyframe embedding")
                             
                             # Show sample I-frames comparison
@@ -839,8 +836,6 @@ def encode_ui():
                                 if len(selected_frames) > rows * cols_per_row:
                                     st.caption(f"... and {len(selected_frames) - rows * cols_per_row} more I-frames with specialized patterns")
                             
-                            st.info("🎬 Note: IFRAME-ONLY stego video uses I-frame specialized patterns. Preview may not work in all browsers. Download for local playback.")
-                            st.success("🔑 IFRAME embedding is completely separate from stream-based methods!")
                         else:
                             st.info("🎬 IFRAME-ONLY video embedded successfully, but frame comparison visualization is not available.")
                     
