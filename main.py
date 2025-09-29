@@ -1092,205 +1092,110 @@ def do_embed_video(cover_path: str, payload_path: str, out_path: str, key: str, 
 
 
 def do_embed_video_iframe(cover_path: str, payload_path: str, out_path: str, key: str, lsb: int, frame_step: int = 10):
-    """IFRAME-ONLY VIDEO EMBEDDING: Embed payload specifically into I-frames (keyframes) only.
-    
-    This method is COMPLETELY SEPARATE from stream embedding:
-    - Targets ONLY I-frames (keyframes) in the video sequence
-    - Uses advanced I-frame detection and frame-type analysis
-    - Embeds data with I-frame specific spatial patterns
-    - Creates frame-dependent artifacts only in I-frames
-    - Completely independent from stream-based methods
+    """IFRAME-ONLY VIDEO EMBEDDING (refactored):
+    - Uses only I-frame candidates (regular GOP spacing + light scatter)
+    - Writes EXACTLY the requested number of LSBs (1..8)
+    - Distributes writes uniformly into blue-channel bytes for imperceptibility
+    - Deterministic selection based on key and frame index (decoding-safe)
     """
-    if lsb < 1 or lsb > 8:  # Different limit for iframe-only
+    if lsb < 1 or lsb > 8:
         raise ValueError("LSB value must be between 1 and 8 for iframe-only encoding.")
 
-    print("🎬 IFRAME-ONLY ENCODING: Loading video for I-frame-only embedding...")
+    print("🎬 IFRAME-ONLY ENCODING: Loading video (blue-channel distribution)...")
     all_frames, meta = _iter_video_frames(cover_path)
     if not all_frames:
         raise ValueError("No frames found in the video.")
 
     total_frames = len(all_frames)
-    
-    # I-FRAME ONLY SELECTION: Focus EXCLUSIVELY on I-frames (keyframes)
-    # Use a different approach - select frames that are likely I-frames
-    # I-frames typically occur at regular intervals (every 10-30 frames in most codecs)
-    iframe_candidates = []
-    
-    # Method 1: Assume I-frames at regular intervals
-    gop_size = max(frame_step, 10)  # Group of Pictures size
-    for i in range(0, total_frames, gop_size):
-        iframe_candidates.append(i)
-    
-    # Method 2: Add some scattered frames for better coverage
-    scatter_frames = []
-    for i in range(1, total_frames, max(1, total_frames // 20)):  # Every 5% of video
-        if i not in iframe_candidates:
-            scatter_frames.append(i)
-    
-    selected_frame_indices = iframe_candidates + scatter_frames[:len(iframe_candidates)//2]
-    selected_frame_indices.sort()
-    
+
+    # I-frame candidate selection (deterministic, codec-agnostic)
+    gop_size = max(frame_step, 10)
+    iframe_candidates = list(range(0, total_frames, gop_size))
+    scatter = [i for i in range(1, total_frames, max(1, total_frames // 20)) if i not in iframe_candidates]
+    selected_frame_indices = sorted(iframe_candidates + scatter[: max(1, len(iframe_candidates) // 2)])
+
     if not selected_frame_indices:
         raise ValueError("No I-frame candidates found.")
-    
-    print(f"   🎞️  Selected {len(selected_frame_indices)}/{total_frames} I-frame candidates for embedding")
-    print(f"   🔑  Using GOP size: {gop_size}, I-frame interval: {gop_size}")
 
-    # Prepare payload with IFRAME-ONLY specific header (use different cover type)
+    print(f"   🎞️  Selected {len(selected_frame_indices)}/{total_frames} I-frame candidates")
+    print(f"   🔑  GOP size: {gop_size}")
+
+    # Header + payload chunks
     payload = open(payload_path, "rb").read()
-    header = Header(MAGIC, VERSION, COV_MP4_OPTIMIZED, lsb, len(payload), hashlib.sha256(payload).digest())  # Use different cover type
+    header = Header(MAGIC, VERSION, COV_MP4_OPTIMIZED, lsb, len(payload), hashlib.sha256(payload).digest())
     header_bits = bytes_to_bits(header.pack())
     payload_bits = bytes_to_bits(payload)
 
     hdr_chunks, hdr_slots = pack_stream_for_lsb(header_bits, lsb)
     pl_chunks, pl_slots = pack_stream_for_lsb(payload_bits, lsb)
     all_chunks = np.concatenate([hdr_chunks, pl_chunks])
-    
-    # Check capacity
-    total_capacity = sum(all_frames[i].size for i in selected_frame_indices)
-    if len(all_chunks) > total_capacity:
-        needed_bytes = (len(all_chunks) * lsb + 7) // 8
-        capacity_bytes = (total_capacity * lsb) // 8
-        raise ValueError(f"Payload too large: need {needed_bytes:,} bytes, have {capacity_bytes:,} bytes capacity")
 
-    # IFRAME-ONLY EMBEDDING: Each I-frame gets specialized I-frame patterns
-    seed = seed_from_key(key + "_iframe_only")  # Different seed to separate from regular frame-based
-    stego_frames = [f.copy() for f in all_frames]
+    # Capacity estimate using blue-channel only (1/3 of bytes per frame), then a usage ratio for imperceptibility
+    usage_ratio = 1.0  # use up to 100% of blue bytes per selected frame to maximize capacity
+    per_frame_cap = []
+    for fi in selected_frame_indices:
+        f = all_frames[fi]
+        n_blue = (f.size // 3)  # RGB bytes, blue channel is 1/3
+        per_frame_cap.append(max(1, int(n_blue * usage_ratio)))
+    total_capacity_slots = sum(per_frame_cap)
+
+    if len(all_chunks) > total_capacity_slots:
+        needed_bytes = (len(all_chunks) * lsb + 7) // 8
+        capacity_bytes = (total_capacity_slots * lsb + 7) // 8
+        raise ValueError(
+            f"Payload too large: need {needed_bytes:,} bytes, have {capacity_bytes:,} bytes capacity across I-frames"
+        )
+
+    # Embed
+    # Use 64-bit seeds to avoid numpy conversion issues
+    base_seed64 = seed_from_key(key + "|iframe_v2") & ((1 << 64) - 1)
     mask = np.uint8(0xFF ^ ((1 << lsb) - 1))
+    stego_frames = [f.copy() for f in all_frames]
     chunks_used = 0
-    
-    print("   🖼️  Applying I-frame-only specialized embedding patterns...")
-    
-    for frame_idx, global_frame_idx in enumerate(selected_frame_indices):
+
+    for order_idx, global_frame_idx in enumerate(selected_frame_indices):
         if chunks_used >= len(all_chunks):
             break
-            
+
         frame = all_frames[global_frame_idx].copy()
         h, w, c = frame.shape
         flat = frame.reshape(-1)
-        
-        # Calculate chunks for this frame
-        remaining_chunks = len(all_chunks) - chunks_used
-        max_frame_chunks = min(flat.size // 3, remaining_chunks)  # Use 33% of I-frame for better coverage
-        
-        # I-FRAME-ONLY PATTERNS: Specialized patterns designed for I-frames
-        iframe_pattern_type = frame_idx % 3  # 3 I-frame specific patterns
-        
-        if iframe_pattern_type == 0:  # I-FRAME PATTERN 1: DCT Block Boundaries
-            print(f"      🟦 Frame {global_frame_idx}: I-FRAME DCT block pattern")
-            # Target 8x8 DCT block boundaries (typical in video compression)
-            dct_indices = []
-            block_size = 8
-            
-            for y in range(0, h, block_size):
-                for x in range(0, w, block_size):
-                    # Focus on block corners and edges
-                    for dy in [0, block_size-1]:
-                        for dx in [0, block_size-1]:
-                            py, px = y + dy, x + dx
-                            if py < h and px < w:
-                                for ch in range(c):
-                                    idx = (py * w + px) * c + ch
-                                    if idx < flat.size:
-                                        dct_indices.append(idx)
-            
-            embed_indices = np.array(dct_indices[:max_frame_chunks], dtype=np.int64)
-            
-        elif iframe_pattern_type == 1:  # I-FRAME PATTERN 2: Frequency Domain Simulation
-            print(f"      🟨 Frame {global_frame_idx}: I-FRAME frequency domain pattern")
-            # Simulate high-frequency components where I-frame data is typically stored
-            freq_indices = []
-            
-            # Create a zigzag pattern similar to DCT coefficient ordering
-            for diagonal in range(min(h, w)):
-                # Main diagonal traversal
-                for i in range(diagonal + 1):
-                    y, x = i, diagonal - i
-                    if y < h and x < w:
-                        for ch in range(c):
-                            idx = (y * w + x) * c + ch
-                            if idx < flat.size:
-                                freq_indices.append(idx)
-                
-                # Anti-diagonal traversal
-                for i in range(diagonal + 1):
-                    y, x = diagonal - i, h - 1 - i
-                    if y >= 0 and y < h and x >= 0 and x < w:
-                        for ch in range(c):
-                            idx = (y * w + x) * c + ch
-                            if idx < flat.size:
-                                freq_indices.append(idx)
-            
-            embed_indices = np.array(freq_indices[:max_frame_chunks], dtype=np.int64)
-            
-        else:  # I-FRAME PATTERN 3: Keyframe Optimization
-            print(f"      🟩 Frame {global_frame_idx}: I-FRAME keyframe optimization pattern")
-            # Focus on areas that are most important in keyframes
-            keyframe_indices = []
-            
-            # Center region (most important in keyframes)
-            center_y, center_x = h//2, w//2
-            radius = min(h//4, w//4)
-            
-            for y in range(max(0, center_y - radius), min(h, center_y + radius)):
-                for x in range(max(0, center_x - radius), min(w, center_x + radius)):
-                    for ch in range(c):
-                        idx = (y * w + x) * c + ch
-                        if idx < flat.size:
-                            keyframe_indices.append(idx)
-            
-            # Add corner regions for motion vector reference points
-            corner_size = min(h//8, w//8)
-            corners = [(0, 0), (0, w-corner_size), (h-corner_size, 0), (h-corner_size, w-corner_size)]
-            
-            for cy, cx in corners:
-                for y in range(cy, min(h, cy + corner_size)):
-                    for x in range(cx, min(w, cx + corner_size)):
-                        for ch in range(c):
-                            idx = (y * w + x) * c + ch
-                            if idx < flat.size:
-                                keyframe_indices.append(idx)
-            
-            embed_indices = np.array(keyframe_indices[:max_frame_chunks], dtype=np.int64)
-        
-        # Embed chunks into this frame using the specific pattern
-        if len(embed_indices) > 0:
-            chunks_this_frame = min(len(embed_indices), remaining_chunks)
-            frame_chunks = all_chunks[chunks_used:chunks_used + chunks_this_frame].astype(np.uint8)
-            
-            # Apply I-frame specific LSB embedding 
-            if iframe_pattern_type in [0, 2]:  # DCT and keyframe patterns: use enhanced LSB
-                enhanced_lsb = min(lsb + 1, 6)  # One extra LSB bit for I-frame robustness
-                enhanced_mask = np.uint8(0xFF ^ ((1 << enhanced_lsb) - 1))
-                # Ensure shifted values don't exceed the enhanced LSB range
-                shifted_chunks = (frame_chunks << 1) & ((1 << enhanced_lsb) - 1)
-                flat[embed_indices[:chunks_this_frame]] = (
-                    flat[embed_indices[:chunks_this_frame]] & enhanced_mask
-                ) | shifted_chunks.astype(np.uint8)
-            else:  # Frequency domain pattern: standard LSB
-                flat[embed_indices[:chunks_this_frame]] = (
-                    flat[embed_indices[:chunks_this_frame]] & mask
-                ) | frame_chunks
-            
-            chunks_used += chunks_this_frame
-            
-        # Update the frame in stego video
+
+        # Build blue-channel indices only
+        all_idx = np.arange(flat.size, dtype=np.uint64)
+        blue_idx = all_idx[(all_idx % 3) == 2]  # 0:R,1:G,2:B for RGB24
+
+        # Deterministic per-frame permutation
+        # Derive per-frame seed (64-bit) deterministically
+        frame_seed = (base_seed64 ^ ((global_frame_idx * 0x9E3779B97F4A7C15) & ((1 << 64) - 1))) & ((1 << 64) - 1)
+        perm = traversal_indices(blue_idx.size, frame_seed)
+        blue_idx_perm = blue_idx[perm.astype(np.int64)]
+
+        # Capacity for this frame
+        frame_cap = min(per_frame_cap[order_idx], blue_idx_perm.size)
+        remaining = len(all_chunks) - chunks_used
+        slots = min(frame_cap, remaining)
+        if slots <= 0:
+            continue
+
+        sel = blue_idx_perm[:slots].astype(np.int64)
+        frame_chunks = all_chunks[chunks_used : chunks_used + slots].astype(np.uint8)
+        flat[sel] = (flat[sel] & mask) | frame_chunks
+        chunks_used += slots
+
         stego_frames[global_frame_idx] = flat.reshape(frame.shape)
 
-    # Save video with modified frames
+    # Save video
     _save_video_frames_rgb(out_path, stego_frames, meta["fps"])
-    
-    # File size comparison
+
+    # Log
     original_size = os.path.getsize(cover_path)
     stego_size = os.path.getsize(out_path)
-    size_change = stego_size - original_size
-    size_change_pct = (size_change / original_size * 100) if original_size > 0 else 0
-    
-    print(f"🎬 IFRAME-ONLY EMBEDDING COMPLETE: {len(payload)} bytes -> {len(selected_frame_indices)} I-frames")
-    print(f"🎯 I-frame patterns: DCT blocks, frequency domain, keyframe optimization")
-    print(f"📊 File sizes: {original_size:,} → {stego_size:,} bytes ({size_change:+,}, {size_change_pct:+.2f}%)")
-    print(f"⚡ Used {chunks_used}/{len(all_chunks)} chunks ({chunks_used/len(all_chunks)*100:.1f}%)")
-    print(f"🔑 I-frame embedding uses specialized patterns optimized for keyframes")
+    delta = stego_size - original_size
+    pct = (delta / original_size * 100) if original_size else 0
+    print(f"🎬 IFRAME-ONLY EMBEDDING COMPLETE: {len(payload)} bytes")
+    print(f"📊 File sizes: {original_size:,} → {stego_size:,} bytes ({delta:+,}, {pct:+.2f}%)")
+    print(f"⚡ Used {chunks_used}/{len(all_chunks)} slots ({chunks_used/len(all_chunks)*100:.1f}%) in blue channel")
 
 
 def do_extract_video(stego_path: str, out_payload_path: str, key: str, lsb: int, frame_step: int = 10):
@@ -1299,147 +1204,79 @@ def do_extract_video(stego_path: str, out_payload_path: str, key: str, lsb: int,
 
 
 def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, lsb: int, frame_step: int = 10):
-    """Extract payload from IFRAME-ONLY embedded stego video with I-frame-specific pattern recognition."""
-    if lsb < 1 or lsb > 6:  # Match the iframe embedding limit
-        raise ValueError("LSB must be 1-6 for iframe-only extraction")
+    """Extract payload from IFRAME-ONLY stego video (refactored to match embed)."""
+    if lsb < 1 or lsb > 8:
+        raise ValueError("LSB must be 1-8 for iframe-only extraction")
 
-    print("🎬 IFRAME-ONLY EXTRACTION: Loading stego video I-frames...")
+    print("🎬 IFRAME-ONLY EXTRACTION: Loading stego video (blue-channel distribution)...")
     all_frames, meta = _iter_video_frames(stego_path)
     if not all_frames:
         raise ValueError("No frames found in video")
 
     total_frames = len(all_frames)
-    
-    # Use SAME I-frame selection logic as embedding
-    gop_size = max(frame_step, 10)  # Must match embedding GOP size
-    iframe_candidates = []
-    for i in range(0, total_frames, gop_size):
-        iframe_candidates.append(i)
-    
-    # Add same scattered frames as embedding
-    scatter_frames = []
-    for i in range(1, total_frames, max(1, total_frames // 20)):
-        if i not in iframe_candidates:
-            scatter_frames.append(i)
-    
-    selected_frame_indices = iframe_candidates + scatter_frames[:len(iframe_candidates)//2]
-    selected_frame_indices.sort()
-    
+
+    # Same frame selection
+    gop_size = max(frame_step, 10)
+    iframe_candidates = list(range(0, total_frames, gop_size))
+    scatter = [i for i in range(1, total_frames, max(1, total_frames // 20)) if i not in iframe_candidates]
+    selected_frame_indices = sorted(iframe_candidates + scatter[: max(1, len(iframe_candidates) // 2)])
+
     if not selected_frame_indices:
         raise ValueError("No I-frame candidates found")
-    
-    print(f"   🎞️  Processing {len(selected_frame_indices)} I-frame candidates for extraction")
-    print(f"   🔑  Using GOP size: {gop_size}, matching embedding parameters")
-    
-    seed = seed_from_key(key + "_iframe_only")  # Must match embedding seed
+
+    # Deterministic seeds and capacities must match embed
+    # Use 64-bit seeds to avoid numpy conversion issues
+    base_seed64 = seed_from_key(key + "|iframe_v2") & ((1 << 64) - 1)
+    usage_ratio = 1.0
     mask = (1 << lsb) - 1
 
-    # First extract header to get payload size
+    # Stage 1: extract header first
     header_bits_needed = HEADER_BYTES * 8
     header_slots_needed = (header_bits_needed + lsb - 1) // lsb
-    
-    print("   📋 Extracting header from I-frame-only patterns...")
-    
-    # Extract header first
+
     header_vals = []
-    for frame_idx, global_frame_idx in enumerate(selected_frame_indices):
+    per_frame_cap = []
+    # Precompute per-frame capacity as in embed
+    for fi in selected_frame_indices:
+        f = all_frames[fi]
+        n_blue = (f.size // 3)
+        per_frame_cap.append(max(1, int(n_blue * usage_ratio)))
+
+    for order_idx, global_frame_idx in enumerate(selected_frame_indices):
         if len(header_vals) >= header_slots_needed:
             break
-            
-        frame = all_frames[global_frame_idx]
-        h, w, c = frame.shape
-        flat = frame.reshape(-1)
-        
-        remaining_needed = header_slots_needed - len(header_vals)
-        max_frame_chunks = min(flat.size // 3, remaining_needed)  # Match embedding 33% usage
-        
-        # Match embedding patterns exactly
-        iframe_pattern_type = frame_idx % 3
-        
-        if iframe_pattern_type == 0:  # DCT Block Boundaries
-            dct_indices = []
-            block_size = 8
-            for y in range(0, h, block_size):
-                for x in range(0, w, block_size):
-                    for dy in [0, block_size-1]:
-                        for dx in [0, block_size-1]:
-                            py, px = y + dy, x + dx
-                            if py < h and px < w:
-                                for ch in range(c):
-                                    idx = (py * w + px) * c + ch
-                                    if idx < flat.size:
-                                        dct_indices.append(idx)
-            extract_indices = np.array(dct_indices[:max_frame_chunks], dtype=np.int64)
-            
-        elif iframe_pattern_type == 1:  # Frequency Domain
-            freq_indices = []
-            for diagonal in range(min(h, w)):
-                for i in range(diagonal + 1):
-                    y, x = i, diagonal - i
-                    if y < h and x < w:
-                        for ch in range(c):
-                            idx = (y * w + x) * c + ch
-                            if idx < flat.size:
-                                freq_indices.append(idx)
-                for i in range(diagonal + 1):
-                    y, x = diagonal - i, h - 1 - i
-                    if y >= 0 and y < h and x >= 0 and x < w:
-                        for ch in range(c):
-                            idx = (y * w + x) * c + ch
-                            if idx < flat.size:
-                                freq_indices.append(idx)
-            extract_indices = np.array(freq_indices[:max_frame_chunks], dtype=np.int64)
-            
-        else:  # Keyframe Optimization
-            keyframe_indices = []
-            center_y, center_x = h//2, w//2
-            radius = min(h//4, w//4)
-            for y in range(max(0, center_y - radius), min(h, center_y + radius)):
-                for x in range(max(0, center_x - radius), min(w, center_x + radius)):
-                    for ch in range(c):
-                        idx = (y * w + x) * c + ch
-                        if idx < flat.size:
-                            keyframe_indices.append(idx)
-            # Corner regions
-            corner_size = min(h//8, w//8)
-            corners = [(0, 0), (0, w-corner_size), (h-corner_size, 0), (h-corner_size, w-corner_size)]
-            for cy, cx in corners:
-                for y in range(cy, min(h, cy + corner_size)):
-                    for x in range(cx, min(w, cx + corner_size)):
-                        for ch in range(c):
-                            idx = (y * w + x) * c + ch
-                            if idx < flat.size:
-                                keyframe_indices.append(idx)
-            extract_indices = np.array(keyframe_indices[:max_frame_chunks], dtype=np.int64)
-        
-        # Extract data with correct LSB handling
-        if len(extract_indices) > 0:
-            chunks_this_frame = min(len(extract_indices), remaining_needed)
-            
-            if iframe_pattern_type in [0, 2]:  # DCT and keyframe: enhanced LSB
-                enhanced_lsb = min(lsb + 1, 6)
-                enhanced_mask = (1 << enhanced_lsb) - 1
-                extracted_vals = (flat[extract_indices[:chunks_this_frame]] & enhanced_mask) >> 1
-                frame_vals = extracted_vals & ((1 << lsb) - 1)
-            else:  # Frequency: standard LSB
-                frame_vals = flat[extract_indices[:chunks_this_frame]] & mask
-            
-            frame_vals_safe = np.array(frame_vals, dtype=np.uint16)
-            header_vals.extend(frame_vals_safe.tolist())
 
-    # Parse header
+        frame = all_frames[global_frame_idx]
+        flat = frame.reshape(-1)
+
+        all_idx = np.arange(flat.size, dtype=np.uint64)
+        blue_idx = all_idx[(all_idx % 3) == 2]
+
+        frame_seed = (base_seed64 ^ ((global_frame_idx * 0x9E3779B97F4A7C15) & ((1 << 64) - 1))) & ((1 << 64) - 1)
+        perm = traversal_indices(blue_idx.size, frame_seed)
+        blue_idx_perm = blue_idx[perm.astype(np.int64)]
+
+        frame_cap = min(per_frame_cap[order_idx], blue_idx_perm.size)
+        remaining = header_slots_needed - len(header_vals)
+        slots = min(frame_cap, remaining)
+        if slots <= 0:
+            continue
+
+        sel = blue_idx_perm[:slots].astype(np.int64)
+        vals = (flat[sel] & mask).astype(np.uint16)
+        header_vals.extend(vals.tolist())
+
     if len(header_vals) < header_slots_needed:
         raise ValueError(f"Insufficient header data: got {len(header_vals)}, need {header_slots_needed}")
 
-    header_vals_masked = [val & ((1 << lsb) - 1) for val in header_vals[:header_slots_needed]]
-    header_chunks = np.array(header_vals_masked, dtype=np.uint8)
+    header_vals = header_vals[:header_slots_needed]
+    header_chunks = np.array([v & mask for v in header_vals], dtype=np.uint8)
     header_bits = unpack_stream_from_lsb(header_chunks, header_bits_needed, lsb)
     header_bytes = bits_to_bytes(header_bits)
     header = Header.unpack(header_bytes)
-    
+
     print(f"   ✅ Header extracted: {header.payload_len} bytes payload, LSB={header.lsb_count}")
 
-    # Validate header
     if header.magic != MAGIC:
         raise ValueError("Bad magic: wrong key, LSB, or step?")
     if header.cover_type != COV_MP4_OPTIMIZED:
@@ -1447,120 +1284,52 @@ def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, ls
     if header.lsb_count != lsb:
         raise ValueError(f"LSB mismatch: expected {lsb}, got {header.lsb_count}")
 
-    # Now extract all data (header + payload) from beginning
+    # Stage 2: extract full (header+payload) then slice payload
     payload_bits_needed = header.payload_len * 8
     payload_slots_needed = (payload_bits_needed + lsb - 1) // lsb
     total_slots_needed = header_slots_needed + payload_slots_needed
-    
-    print(f"   📦 Extracting {header.payload_len} byte payload...")
-    
-    # Extract ALL data (header + payload) using same patterns
+
     all_vals = []
-    for frame_idx, global_frame_idx in enumerate(selected_frame_indices):
+    for order_idx, global_frame_idx in enumerate(selected_frame_indices):
         if len(all_vals) >= total_slots_needed:
             break
-            
-        frame = all_frames[global_frame_idx]
-        h, w, c = frame.shape
-        flat = frame.reshape(-1)
-        
-        remaining_needed = total_slots_needed - len(all_vals)
-        max_frame_chunks = min(flat.size // 3, remaining_needed)
-        
-        iframe_pattern_type = frame_idx % 3
-        
-        if iframe_pattern_type == 0:  # DCT Block Boundaries
-            dct_indices = []
-            block_size = 8
-            for y in range(0, h, block_size):
-                for x in range(0, w, block_size):
-                    for dy in [0, block_size-1]:
-                        for dx in [0, block_size-1]:
-                            py, px = y + dy, x + dx
-                            if py < h and px < w:
-                                for ch in range(c):
-                                    idx = (py * w + px) * c + ch
-                                    if idx < flat.size:
-                                        dct_indices.append(idx)
-            extract_indices = np.array(dct_indices[:max_frame_chunks], dtype=np.int64)
-            
-        elif iframe_pattern_type == 1:  # Frequency Domain
-            freq_indices = []
-            for diagonal in range(min(h, w)):
-                for i in range(diagonal + 1):
-                    y, x = i, diagonal - i
-                    if y < h and x < w:
-                        for ch in range(c):
-                            idx = (y * w + x) * c + ch
-                            if idx < flat.size:
-                                freq_indices.append(idx)
-                for i in range(diagonal + 1):
-                    y, x = diagonal - i, h - 1 - i
-                    if y >= 0 and y < h and x >= 0 and x < w:
-                        for ch in range(c):
-                            idx = (y * w + x) * c + ch
-                            if idx < flat.size:
-                                freq_indices.append(idx)
-            extract_indices = np.array(freq_indices[:max_frame_chunks], dtype=np.int64)
-            
-        else:  # Keyframe Optimization
-            keyframe_indices = []
-            center_y, center_x = h//2, w//2
-            radius = min(h//4, w//4)
-            for y in range(max(0, center_y - radius), min(h, center_y + radius)):
-                for x in range(max(0, center_x - radius), min(w, center_x + radius)):
-                    for ch in range(c):
-                        idx = (y * w + x) * c + ch
-                        if idx < flat.size:
-                            keyframe_indices.append(idx)
-            corner_size = min(h//8, w//8)
-            corners = [(0, 0), (0, w-corner_size), (h-corner_size, 0), (h-corner_size, w-corner_size)]
-            for cy, cx in corners:
-                for y in range(cy, min(h, cy + corner_size)):
-                    for x in range(cx, min(w, cx + corner_size)):
-                        for ch in range(c):
-                            idx = (y * w + x) * c + ch
-                            if idx < flat.size:
-                                keyframe_indices.append(idx)
-            extract_indices = np.array(keyframe_indices[:max_frame_chunks], dtype=np.int64)
-        
-        # Extract with same LSB handling as embedding
-        if len(extract_indices) > 0:
-            chunks_this_frame = min(len(extract_indices), remaining_needed)
-            
-            if iframe_pattern_type in [0, 2]:  # DCT and keyframe: enhanced LSB
-                enhanced_lsb = min(lsb + 1, 6)
-                enhanced_mask = (1 << enhanced_lsb) - 1
-                extracted_vals = (flat[extract_indices[:chunks_this_frame]] & enhanced_mask) >> 1
-                frame_vals = extracted_vals & ((1 << lsb) - 1)
-            else:  # Frequency: standard LSB
-                frame_vals = flat[extract_indices[:chunks_this_frame]] & mask
-            
-            frame_vals_safe = np.array(frame_vals, dtype=np.uint16)
-            all_vals.extend(frame_vals_safe.tolist())
 
-    # Check if we have enough data
+        frame = all_frames[global_frame_idx]
+        flat = frame.reshape(-1)
+
+        all_idx = np.arange(flat.size, dtype=np.uint64)
+        blue_idx = all_idx[(all_idx % 3) == 2]
+
+        frame_seed = (base_seed64 ^ ((global_frame_idx * 0x9E3779B97F4A7C15) & ((1 << 64) - 1))) & ((1 << 64) - 1)
+        perm = traversal_indices(blue_idx.size, frame_seed)
+        blue_idx_perm = blue_idx[perm.astype(np.int64)]
+
+        frame_cap = min(per_frame_cap[order_idx], blue_idx_perm.size)
+        remaining = total_slots_needed - len(all_vals)
+        slots = min(frame_cap, remaining)
+        if slots <= 0:
+            continue
+
+        sel = blue_idx_perm[:slots].astype(np.int64)
+        vals = (flat[sel] & mask).astype(np.uint16)
+        all_vals.extend(vals.tolist())
+
     if len(all_vals) < total_slots_needed:
         raise ValueError(f"Insufficient data: got {len(all_vals)}, need {total_slots_needed}")
-    
-    # Extract payload (skip header)
+
     payload_vals = all_vals[header_slots_needed:total_slots_needed]
-    payload_vals_masked = [val & ((1 << lsb) - 1) for val in payload_vals]
-    payload_chunks = np.array(payload_vals_masked, dtype=np.uint8)
+    payload_chunks = np.array([v & mask for v in payload_vals], dtype=np.uint8)
     payload_bits = unpack_stream_from_lsb(payload_chunks, payload_bits_needed, lsb)
     payload_bytes = bits_to_bytes(payload_bits)
-    
-    # Verify integrity
+
     if hashlib.sha256(payload_bytes).digest() != header.payload_sha256:
         raise ValueError("Payload hash mismatch - data may be corrupted")
 
-    # Save extracted payload
     with open(out_payload_path, "wb") as f:
         f.write(payload_bytes)
-    
+
     print(f"🎬 IFRAME-ONLY EXTRACTION COMPLETE: {len(payload_bytes)} bytes -> {out_payload_path}")
-    print(f"🎯 Used I-frame specific patterns: DCT blocks, frequency domain, keyframe optimization")
-    print(f"✅ Payload integrity verified with I-frame-only encoding")
+    print(f"✅ Payload integrity verified (blue-channel distribution)")
 
 
 def do_embed_video_stream(cover_path: str, payload_path: str, out_path: str, key: str, lsb: int):

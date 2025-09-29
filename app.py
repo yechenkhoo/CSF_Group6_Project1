@@ -7,6 +7,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import wave
 from collections import Counter
+import zipfile
 
 from main import (
     do_embed_image,
@@ -421,6 +422,7 @@ def encode_ui():
         # payload_up = st.file_uploader("Payload file (any)", type=None, key="payload")
 
         payload_mode = st.radio("Payload type", ["Text", "File"], horizontal=True)
+        compress_zip = st.checkbox("Compress payload (.zip) before embedding", value=False)
 
         if payload_mode == "Text":
             payload_text = st.text_area("Enter text to hide", height=150, key="payload_text")
@@ -535,7 +537,7 @@ def encode_ui():
                     step=1,
                     key="vid_step_preview",
                 )
-                st.caption("Choose .mp4 as output. Keep frame step consistent for decoding.")
+                st.caption("Choose .mp4 as output. Keep frame step consistent for decoding. I-frame method distributes changes in blue channel for imperceptibility.")
             else:
                 # Stream-based embedding options
                 st.subheader("Stream Selection")
@@ -623,10 +625,29 @@ def encode_ui():
                     payload_fd, payload_path = tempfile.mkstemp(suffix=".txt")
                     with os.fdopen(payload_fd, "w", encoding="utf-8") as f:
                         f.write(payload_text or "")
+                    orig_name = "payload.txt"
                 else:
                     payload_path = _save_to_tmp(
-                        payload_up, suffix=os.path.splitext(payload_up.name)[1] or ".txt"
+                        payload_up, suffix=os.path.splitext(payload_up.name)[1] or ".bin"
                     )
+                    orig_name = os.path.basename(payload_up.name) or "payload.bin"
+
+                # Optional compression to ZIP for better capacity
+                payload_for_embed = payload_path
+                if compress_zip:
+                    zip_fd, zip_path = tempfile.mkstemp(suffix=".zip")
+                    os.close(zip_fd)
+                    try:
+                        with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+                            zf.write(payload_path, arcname=orig_name)
+                        # Replace payload with compressed zip
+                        orig_size = os.path.getsize(payload_path)
+                        zip_size = os.path.getsize(zip_path)
+                        payload_for_embed = zip_path
+                        st.info(f"Compressed payload: {orig_size:,} → {zip_size:,} bytes")
+                    except Exception as e:
+                        st.warning(f"Compression failed, embedding original file: {e}")
+                        payload_for_embed = payload_path
 
                 out_path = os.path.join(
                     tempfile.gettempdir(), (out_name or "stego") + ext_choice
@@ -637,7 +658,7 @@ def encode_ui():
                     and ext_choice in SUPPORTED_IMAGE_EXTS
                 ):
                     do_embed_image_region(
-                        cover_path, payload_path, out_path, key, lsb, region
+                        cover_path, payload_for_embed, out_path, key, lsb, region
                     )
                     region_info = (
                         f" (region {region['width']}×{region['height']})"
@@ -688,11 +709,11 @@ def encode_ui():
 
                 elif cov_ext in SUPPORTED_AUDIO_EXTS and ext_choice == ".wav":
                     if time_range:
-                        do_embed_audio_region(cover_path, payload_path, out_path, key, lsb, time_range)
+                        do_embed_audio_region(cover_path, payload_for_embed, out_path, key, lsb, time_range)
                         time_info = f" (time {time_range['start_time']:.1f}s-{time_range['end_time']:.1f}s)"
                         st.success(f"Embedded into audio stego{time_info}")
                     else:
-                        do_embed_audio(cover_path, payload_path, out_path, key, lsb)
+                        do_embed_audio(cover_path, payload_for_embed, out_path, key, lsb)
                         st.success("Embedded into audio stego")
                     
                     # Audio preview + LSB waveform viz
@@ -744,16 +765,16 @@ def encode_ui():
                             st.stop()
                         
                         # Call the NEW iframe-only function
-                        do_embed_video_iframe(cover_path, payload_path, out_path, key, lsb, frame_step_val)
+                        do_embed_video_iframe(cover_path, payload_for_embed, out_path, key, lsb, frame_step_val)
                         
                         # Get file sizes for display
                         original_size = os.path.getsize(cover_path)
                         stego_size = os.path.getsize(out_path)
-                        payload_size = os.path.getsize(payload_path)
+                        payload_size = os.path.getsize(payload_for_embed)
                         size_change = stego_size - original_size
                         size_change_pct = (size_change / original_size * 100) if original_size > 0 else 0
                         
-                        st.success("Embedded into video stego (IFRAME-ONLY)")
+                        st.success("Embedded into video stego (IFRAME-ONLY, blue-channel distribution)")
                         
                         # Show file size comparison
                         col1, col2, col3 = st.columns(3)
@@ -815,14 +836,9 @@ def encode_ui():
                                     orig_frame = original_frames[frame_idx]
                                     stego_frame = stego_frames[frame_idx]
                                     
-                                    # Compute difference in LSBs (with enhanced LSB for some patterns)
-                                    if iframe_type in [0, 2]:  # DCT and keyframe use enhanced LSB
-                                        enhanced_lsb = min(lsb + 1, 6)
-                                        diff = (stego_frame ^ orig_frame) & ((1 << enhanced_lsb) - 1)
-                                        scale = 255 // ((1 << enhanced_lsb) - 1) if enhanced_lsb < 8 else 1
-                                    else:
-                                        diff = (stego_frame ^ orig_frame) & ((1 << lsb) - 1)
-                                        scale = 255 // ((1 << lsb) - 1) if lsb < 8 else 1
+                                    # Compute difference in LSBs (exact selected LSBs)
+                                    diff = (stego_frame ^ orig_frame) & ((1 << lsb) - 1)
+                                    scale = 255 // ((1 << lsb) - 1) if lsb < 8 else 1
                                     
                                     diff_vis = (diff * scale).astype(np.uint8)
                                     
@@ -846,14 +862,9 @@ def encode_ui():
                                                 orig_frame = original_frames[frame_num]
                                                 stego_frame = stego_frames[frame_num]
                                                 
-                                                # Use appropriate LSB for I-frame pattern
-                                                if iframe_type in [0, 2]:
-                                                    enhanced_lsb = min(lsb + 1, 6)
-                                                    diff = (stego_frame ^ orig_frame) & ((1 << enhanced_lsb) - 1)
-                                                    scale = 255 // ((1 << enhanced_lsb) - 1) if enhanced_lsb < 8 else 1
-                                                else:
-                                                    diff = (stego_frame ^ orig_frame) & ((1 << lsb) - 1)
-                                                    scale = 255 // ((1 << lsb) - 1) if lsb < 8 else 1
+                                                # Use exact selected LSBs
+                                                diff = (stego_frame ^ orig_frame) & ((1 << lsb) - 1)
+                                                scale = 255 // ((1 << lsb) - 1) if lsb < 8 else 1
                                                 
                                                 diff_vis = (diff * scale).astype(np.uint8)
                                                 pattern_emoji = ["🟦", "🟨", "🟩"][iframe_type]
@@ -877,7 +888,7 @@ def encode_ui():
                             embed_stream_index = int(st.session_state.get("audio_stream_idx_encode", 0))
                         
                         try:
-                            do_embed_video_stream(cover_path, payload_path, out_path, key, lsb)
+                            do_embed_video_stream(cover_path, payload_for_embed, out_path, key, lsb)
                         except RuntimeError as e:
                             if "FFmpeg not found" in str(e):
                                 st.warning("FFmpeg not found. Falling back to frame-based embedding...")
@@ -895,7 +906,7 @@ def encode_ui():
                         # Get file sizes for display
                         original_size = os.path.getsize(cover_path)
                         stego_size = os.path.getsize(out_path)
-                        payload_size = os.path.getsize(payload_path)
+                        payload_size = os.path.getsize(payload_for_embed)
                         size_change = stego_size - original_size
                         size_change_pct = (size_change / original_size * 100) if original_size > 0 else 0
                         
@@ -1163,7 +1174,7 @@ def decode_ui():
                             except Exception as e:
                                 if "Bad magic" in str(e) or "Bad magic" in getattr(e, "args", [""])[0] or "iframe-only" in str(e).lower():
                                     step_candidates = [step_val] + [1, 2, 3, 5, 10, 15, 20, 24, 25, 30]
-                                    lsb_candidates = [lsb] + [i for i in range(1, 7) if i != lsb]  # Max 6 for iframe
+                                    lsb_candidates = [lsb] + [i for i in range(1, 9) if i != lsb]  # 1..8 supported
                                     tried = set()
                                     found = None
                                     for lsb_try in lsb_candidates:
