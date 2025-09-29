@@ -2075,6 +2075,7 @@ def do_extract_video_stream_legacy(stego_path: str, out_payload_path: str, key: 
     payload = bits_to_bytes(pay_bits)
 
     if hashlib.sha256(payload).digest() != hdr.payload_sha256:
+    if hashlib.sha256(payload).digest() != hdr.payload_sha256:
         raise ValueError("Integrity check failed (wrong key or corrupted data).")
 
     open(out_payload_path, "wb").write(payload)
