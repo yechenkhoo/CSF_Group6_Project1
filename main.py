@@ -1300,8 +1300,8 @@ def do_extract_video(stego_path: str, out_payload_path: str, key: str, lsb: int,
 
 def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, lsb: int, frame_step: int = 10):
     """Extract payload from IFRAME-ONLY embedded stego video with I-frame-specific pattern recognition."""
-    if lsb < 1 or lsb > 8:  # Match the iframe embedding limit
-        raise ValueError("LSB must be 1-8 for iframe-only extraction")
+    if lsb < 1 or lsb > 6:  # Match the iframe embedding limit
+        raise ValueError("LSB must be 1-6 for iframe-only extraction")
 
     print("🎬 IFRAME-ONLY EXTRACTION: Loading stego video I-frames...")
     all_frames, meta = _iter_video_frames(stego_path)
