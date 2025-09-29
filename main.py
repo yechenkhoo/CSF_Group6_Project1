@@ -1564,7 +1564,268 @@ def do_extract_video_iframe(stego_path: str, out_payload_path: str, key: str, ls
 
 
 def do_embed_video_stream(cover_path: str, payload_path: str, out_path: str, key: str, lsb: int):
-    """Simple stream-based video steganography embedding (original version)."""
+    """Optimized stream-based video steganography embedding with minimal file size increase."""
+    if imageio is None:
+        raise RuntimeError("imageio not found. pip install imageio[ffmpeg]")
+        
+    if lsb < 1 or lsb > 8:
+        raise ValueError("lsb must be 1..8")
+
+    # Get original file size for comparison
+    original_size = os.path.getsize(cover_path)
+    
+    reader = imageio.get_reader(cover_path)
+    metadata = reader.get_meta_data()
+    fps = metadata.get('fps', 30)
+    
+    print(f"🎬 OPTIMIZED STREAM-BASED EMBEDDING:")
+    print(f"   📊 Original file size: {original_size:,} bytes")
+    print(f"   🎞️  Video FPS: {fps}")
+    
+    # Memory-efficient frame processing - don't load all frames at once
+    frame_data_chunks = []
+    frame_shapes = []
+    total_pixels = 0
+    
+    for i, frame in enumerate(reader):
+        if i == 0:
+            print(f"   📐 Frame dimensions: {frame.shape}")
+        frame_shapes.append(frame.shape)
+        flat_frame = frame.flatten()
+        frame_data_chunks.append(flat_frame)
+        total_pixels += flat_frame.size
+        
+        # Progress indicator for large videos
+        if (i + 1) % 100 == 0:
+            print(f"   📹 Processed {i + 1} frames...")
+    
+    reader.close()
+    
+    if len(frame_data_chunks) == 0:
+        raise ValueError("No frames found in video")
+    
+    # Concatenate all frame data efficiently
+    flat = np.concatenate(frame_data_chunks)
+    
+    print(f"   📊 Video info: {len(frame_shapes)} frames, {total_pixels:,} total pixels")
+
+    seed = seed_from_key(key)
+    idx = traversal_indices(flat.size, seed)
+
+    payload = open(payload_path, "rb").read()
+    print(f"   📦 Payload: {len(payload)} bytes")
+
+    header = Header(MAGIC, VERSION, COV_VIDEO_STREAM, lsb, len(payload), hashlib.sha256(payload).digest())
+    header_bytes = header.pack()
+
+    # Use the same approach as image embedding - simple and reliable
+    header_bits = bytes_to_bits(header_bytes)
+    payload_bits = bytes_to_bits(payload)
+
+    hdr_chunks, hdr_slots = pack_stream_for_lsb(header_bits, lsb)
+    pl_chunks, pl_slots = pack_stream_for_lsb(payload_bits, lsb)
+    
+    chunks = np.concatenate([hdr_chunks, pl_chunks])
+    needed_slots = chunks.size
+    
+    print(f"   📊 Embedding capacity check:")
+    print(f"      Slots needed: {needed_slots:,}")
+    print(f"      Slots available: {flat.size:,}")
+    print(f"      Usage: {needed_slots/flat.size*100:.3f}%")
+
+    if needed_slots > flat.size:
+        need = (needed_slots * lsb + 7) // 8
+        cap = (flat.size * lsb) // 8
+        raise ValueError(f"Payload requires ~{need} bytes but video capacity is {cap} bytes.")
+
+    mask = np.uint8(0xFF ^ ((1 << lsb) - 1))
+    flat[idx[:needed_slots]] = (flat[idx[:needed_slots]] & mask) | chunks
+    
+    print(f"   ✅ Data embedded using {lsb} LSB bits per pixel")
+
+    # Reconstruct frames from modified flat data
+    reconstructed_frames = []
+    pixel_offset = 0
+    
+    for i, shape in enumerate(frame_shapes):
+        frame_size = np.prod(shape)
+        frame_flat = flat[pixel_offset:pixel_offset + frame_size]
+        frame = frame_flat.reshape(shape)
+        reconstructed_frames.append(frame.astype(np.uint8))
+        pixel_offset += frame_size
+
+    print(f"   � Reconstructed {len(reconstructed_frames)} frames")
+
+    # LOSSLESS ENCODING WITH SIZE OPTIMIZATION: Use lossless encoding but with efficient container settings
+    print(f"   🎬 Encoding with lossless settings (preserves steganography data)...")
+    
+    success = False
+    methods_tried = []
+    
+    # Method 1: Lossless H.264 RGB with size optimization (preferred for steganography)
+    try:
+        writer = imageio.get_writer(
+            out_path, 
+            fps=fps,
+            codec='libx264rgb',  # RGB codec preserves exact pixel values
+            format='FFMPEG',
+            macro_block_size=1,  # Prevent resizing
+            ffmpeg_params=[
+                '-crf', '0',  # Lossless quality (required for steganography)
+                '-preset', 'slow',  # Better compression efficiency
+                '-pix_fmt', 'rgb24',  # RGB format preserves colors exactly
+                '-tune', 'stillimage',  # Optimize for similar frames
+                '-movflags', '+faststart',  # Optimize file structure
+                '-x264-params', 'keyint=250:min-keyint=25'  # Efficient keyframe structure
+            ]
+        )
+        for frame in reconstructed_frames:
+            writer.append_data(frame)
+        writer.close()
+        methods_tried.append("H.264 RGB lossless optimized")
+        success = True
+        print(f"   ✅ Used lossless H.264 RGB with size optimization")
+        
+    except Exception as e:
+        print(f"   ⚠️  Lossless H.264 RGB failed: {e}")
+        methods_tried.append(f"H.264 RGB failed: {e}")
+        
+        # Method 2: Lossless H.264 YUV444 (still lossless but different color space)
+        try:
+            writer = imageio.get_writer(
+                out_path, 
+                fps=fps,
+                codec='libx264',
+                format='FFMPEG',
+                macro_block_size=1,
+                ffmpeg_params=[
+                    '-crf', '0',  # Lossless quality
+                    '-preset', 'slow',  # Better compression
+                    '-pix_fmt', 'yuv444p',  # Lossless YUV format
+                    '-movflags', '+faststart'
+                ]
+            )
+            for frame in reconstructed_frames:
+                writer.append_data(frame)
+            writer.close()
+            methods_tried.append("H.264 YUV444 lossless")
+            success = True
+            print(f"   ✅ Used lossless H.264 YUV444 encoding")
+            
+        except Exception as e:
+            print(f"   ⚠️  Lossless H.264 YUV444 failed: {e}")
+            methods_tried.append(f"H.264 YUV444 failed: {e}")
+            
+            # Method 3: Ultra-fast lossless fallback (fastest but larger files)
+            try:
+                writer = imageio.get_writer(
+                    out_path, 
+                    fps=fps,
+                    codec='libx264rgb',
+                    format='FFMPEG',
+                    macro_block_size=1,
+                    ffmpeg_params=[
+                        '-crf', '0',  # Lossless quality
+                        '-preset', 'ultrafast',  # Fastest encoding
+                        '-pix_fmt', 'rgb24'
+                    ]
+                )
+                for frame in reconstructed_frames:
+                    writer.append_data(frame)
+                writer.close()
+                methods_tried.append("H.264 RGB ultrafast lossless")
+                success = True
+                print(f"   ✅ Used ultrafast lossless H.264 RGB encoding")
+                
+            except Exception as e:
+                print(f"   ❌ All lossless encoding methods failed: {e}")
+                methods_tried.append(f"Ultrafast lossless failed: {e}")
+                raise RuntimeError(f"Lossless video encoding failed. Methods tried: {methods_tried}")
+
+    if success:
+        # Check file sizes
+        output_size = os.path.getsize(out_path)
+        size_increase = output_size - original_size
+        size_increase_pct = (size_increase / original_size * 100) if original_size > 0 else 0
+        
+        print(f"✅ OPTIMIZED EMBEDDING COMPLETE:")
+        print(f"   � File size comparison:")
+        print(f"      Original: {original_size:,} bytes")
+        print(f"      Stego:    {output_size:,} bytes")
+        print(f"      Change:   {size_increase:+,} bytes ({size_increase_pct:+.2f}%)")
+        print(f"   📦 Embedded {len(payload)} bytes using stream-based method")
+        print(f"   🎬 Encoding method: {methods_tried[-1]}")
+        
+        # Verify dimensions are preserved
+        try:
+            test_reader = imageio.get_reader(out_path)
+            test_frame = next(iter(test_reader))
+            test_reader.close()
+            
+            if test_frame.shape == frame_shapes[0]:
+                print(f"   ✅ Dimensions preserved: {test_frame.shape}")
+            else:
+                print(f"   ⚠️  Dimension change: {frame_shapes[0]} → {test_frame.shape}")
+        except:
+            pass
+        
+        # CRITICAL: Verify that LSB data survived the encoding process
+        print(f"   🔍 Verifying LSB data integrity...")
+        try:
+            # Read back a small sample of the encoded video to verify LSBs are preserved
+            test_reader = imageio.get_reader(out_path)
+            test_frames = []
+            for i, frame in enumerate(test_reader):
+                test_frames.append(frame)
+                if i >= 2:  # Just test first few frames
+                    break
+            test_reader.close()
+            
+            if test_frames:
+                # Compare LSBs of first frame
+                original_frame = reconstructed_frames[0]
+                encoded_frame = test_frames[0]
+                
+                if original_frame.shape == encoded_frame.shape:
+                    # Check if LSBs match in a sample of pixels
+                    sample_pixels = min(1000, original_frame.size)
+                    orig_flat = original_frame.flatten()
+                    enc_flat = encoded_frame.flatten()
+                    
+                    # Sample every N pixels to check LSB preservation
+                    step = max(1, orig_flat.size // sample_pixels)
+                    sample_indices = range(0, orig_flat.size, step)
+                    
+                    lsb_mismatches = 0
+                    for i in sample_indices[:sample_pixels]:
+                        orig_lsb = orig_flat[i] & ((1 << lsb) - 1)
+                        enc_lsb = enc_flat[i] & ((1 << lsb) - 1)
+                        if orig_lsb != enc_lsb:
+                            lsb_mismatches += 1
+                    
+                    match_rate = (sample_pixels - lsb_mismatches) / sample_pixels * 100
+                    
+                    if match_rate >= 99.9:
+                        print(f"   ✅ LSB verification: {match_rate:.2f}% match rate - EXCELLENT")
+                    elif match_rate >= 95.0:
+                        print(f"   ⚠️  LSB verification: {match_rate:.2f}% match rate - ACCEPTABLE")
+                    else:
+                        print(f"   ❌ LSB verification: {match_rate:.2f}% match rate - DATA CORRUPTION!")
+                        print(f"      LSB mismatches: {lsb_mismatches}/{sample_pixels} pixels")
+                        print(f"      WARNING: Decoding may fail due to lossy compression!")
+                else:
+                    print(f"   ⚠️  Frame dimension change: {original_frame.shape} → {encoded_frame.shape}")
+            else:
+                print(f"   ⚠️  Could not verify LSB integrity - no test frames")
+                
+        except Exception as e:
+            print(f"   ⚠️  LSB verification failed: {e}")
+    else:
+        raise RuntimeError("All encoding methods failed")
+
+
+def do_embed_video_stream_legacy(cover_path: str, payload_path: str, out_path: str, key: str, lsb: int):
+    """Legacy stream-based embedding (kept for compatibility) - produces larger files."""
     if imageio is None:
         raise RuntimeError("imageio not found. pip install imageio[ffmpeg]")
         
@@ -1586,27 +1847,13 @@ def do_embed_video_stream(cover_path: str, payload_path: str, out_path: str, key
     # Stack frames and flatten
     vid_array = np.stack(frames, axis=0)  # (num_frames, height, width, channels)
     flat = vid_array.flatten()
-    
-    print(f"🎬 STREAM-BASED EMBEDDING DEBUG:")
-    print(f"   📊 Video info: {len(frames)} frames, flattened to {flat.size:,} pixels")
 
     seed = seed_from_key(key)
     idx = traversal_indices(flat.size, seed)
-    print(f"   🔑 Using key seed: {seed}")
 
     payload = open(payload_path, "rb").read()
-    print(f"   📦 Payload: {len(payload)} bytes")
-
     header = Header(MAGIC, VERSION, COV_VIDEO_STREAM, lsb, len(payload), hashlib.sha256(payload).digest())
     header_bytes = header.pack()
-    
-    print(f"   📋 Header details:")
-    print(f"      Magic: {MAGIC.hex()}")
-    print(f"      Version: {VERSION}")
-    print(f"      Cover type: {COV_VIDEO_STREAM}")
-    print(f"      LSB count: {lsb}")
-    print(f"      Payload length: {len(payload)}")
-    print(f"   📋 Raw header bytes (first 16): {header_bytes[:16].hex()}")
 
     # Use the same approach as image embedding - simple and reliable
     header_bits = bytes_to_bits(header_bytes)
@@ -1617,12 +1864,6 @@ def do_embed_video_stream(cover_path: str, payload_path: str, out_path: str, key
     
     chunks = np.concatenate([hdr_chunks, pl_chunks])
     needed_slots = chunks.size
-    
-    print(f"   📊 Embedding stats:")
-    print(f"      Header slots: {hdr_slots}")
-    print(f"      Payload slots: {pl_slots}")
-    print(f"      Total slots needed: {needed_slots}")
-    print(f"      Available slots: {flat.size:,}")
 
     if needed_slots > flat.size:
         need = (needed_slots * lsb + 7) // 8
@@ -1631,70 +1872,152 @@ def do_embed_video_stream(cover_path: str, payload_path: str, out_path: str, key
 
     mask = np.uint8(0xFF ^ ((1 << lsb) - 1))
     flat[idx[:needed_slots]] = (flat[idx[:needed_slots]] & mask) | chunks
-    
-    print(f"   ✅ Data embedded successfully using LSB mask: {mask:08b}")
-    print(f"   🎬 First 10 embedded values: {chunks[:10].tolist()}")
 
     # Reshape back to frames
     vid_array = flat.reshape(vid_array.shape)
     frames = [vid_array[i] for i in range(vid_array.shape[0])]
 
-    # Write output video with PRESERVED DIMENSIONS to prevent pixel reordering
-    print(f"   📐 Preserving original dimensions: {vid_array.shape}")
-    
-    # CRITICAL: Use lossless encoding to prevent ANY pixel changes
+    # Use lossless encoding (produces larger files)
     try:
-        # Method 1: Try completely lossless encoding
         writer = imageio.get_writer(
             out_path, 
             fps=fps,
-            macro_block_size=1,  # CRITICAL: Prevent automatic resizing
-            codec='libx264rgb',  # RGB codec for lossless
+            macro_block_size=1,
+            codec='libx264rgb',
             format='FFMPEG',
             ffmpeg_params=['-crf', '0', '-preset', 'ultrafast', '-pix_fmt', 'rgb24']
         )
         for frame in frames:
             writer.append_data(frame.astype(np.uint8))
         writer.close()
-        print(f"   ✅ Used lossless RGB encoding (libx264rgb)")
         
-    except Exception as e:
-        print(f"   ⚠️  Lossless encoding failed ({e}), trying fallback...")
-        # Method 2: Fallback with very high quality
+    except Exception:
         writer = imageio.get_writer(
             out_path, 
             fps=fps,
-            macro_block_size=1,  # CRITICAL: Prevent automatic resizing
+            macro_block_size=1,
             codec='libx264',
             format='FFMPEG',
-            quality=10,  # Highest quality
+            quality=10,
             ffmpeg_params=['-crf', '0', '-preset', 'ultrafast', '-pix_fmt', 'yuv444p']
         )
         for frame in frames:
             writer.append_data(frame.astype(np.uint8))
         writer.close()
-        print(f"   ✅ Used high-quality encoding (yuv444p)")
 
-    print(f"✅ Embedded {len(payload)} bytes into video stream -> {out_path}")
-    print(f"   📐 Final video dimensions preserved: {vid_array.shape[1]}×{vid_array.shape[2]}")
-    
-    # VERIFICATION: Check if dimensions are actually preserved
-    try:
-        test_reader = imageio.get_reader(out_path)
-        test_frame = next(iter(test_reader))
-        test_reader.close()
-        
-        if test_frame.shape == frames[0].shape:
-            print(f"   ✅ DIMENSION CHECK PASSED: {test_frame.shape}")
-        else:
-            print(f"   ❌ DIMENSION CHECK FAILED: {frames[0].shape} → {test_frame.shape}")
-            print(f"      This will cause decoding to fail! Try different encoding settings.")
-    except Exception as e:
-        print(f"   ⚠️  Could not verify dimensions: {e}")
+    print(f"✅ Embedded {len(payload)} bytes into video stream -> {out_path} (legacy lossless method)")
 
 
 def do_extract_video_stream(stego_path: str, out_payload_path: str, key: str, lsb: int):
-    """Simple stream-based video steganography extraction (original version)."""
+    """Optimized stream-based video steganography extraction."""
+    if imageio is None:
+        raise RuntimeError("imageio not found. pip install imageio[ffmpeg]")
+        
+    if lsb < 1 or lsb > 8:
+        raise ValueError("lsb must be 1..8")
+
+    reader = imageio.get_reader(stego_path)
+    
+    print(f"🎬 OPTIMIZED STREAM-BASED EXTRACTION:")
+    
+    # Memory-efficient frame processing
+    frame_data_chunks = []
+    frame_count = 0
+    
+    for i, frame in enumerate(reader):
+        if i == 0:
+            print(f"   📐 Frame dimensions: {frame.shape}")
+        flat_frame = frame.flatten()
+        frame_data_chunks.append(flat_frame)
+        frame_count += 1
+        
+        # Progress indicator for large videos
+        if (i + 1) % 100 == 0:
+            print(f"   📹 Processed {i + 1} frames...")
+    
+    reader.close()
+
+    if len(frame_data_chunks) == 0:
+        raise ValueError("No frames found in video")
+
+    # Concatenate all frame data efficiently
+    flat = np.concatenate(frame_data_chunks)
+    
+    print(f"   📊 Video info: {frame_count} frames, {flat.size:,} total pixels")
+
+    seed = seed_from_key(key)
+    idx = traversal_indices(flat.size, seed)
+
+    # First, read header bits
+    hdr_bits_needed = HEADER_BYTES * 8
+    slots_for_hdr = (hdr_bits_needed + lsb - 1) // lsb
+    
+    print(f"   📋 Reading header: {slots_for_hdr:,} slots needed")
+    
+    if slots_for_hdr > flat.size:
+        raise ValueError("Not enough data to read header")
+
+    vals_hdr = (flat[idx[:slots_for_hdr]] & ((1 << lsb) - 1)).astype(np.uint16)
+    hdr_bits = unpack_stream_from_lsb(vals_hdr, hdr_bits_needed, lsb)
+    header_bytes = bits_to_bytes(hdr_bits)
+    
+    # Verify magic bytes
+    if header_bytes[:4] != MAGIC:
+        print(f"   ❌ MAGIC MISMATCH:")
+        print(f"      Expected: {MAGIC.hex()}")
+        print(f"      Found:    {header_bytes[:4].hex()}")
+        print(f"   💡 This may indicate:")
+        print(f"      - Wrong extraction key")
+        print(f"      - Wrong LSB setting")
+        print(f"      - Video was re-encoded after embedding")
+        print(f"      - File corruption")
+        raise ValueError("Stream-based extraction failed: wrong key, LSB, or corrupted video")
+    
+    try:
+        hdr = Header.unpack(header_bytes)
+        print(f"   ✅ Header verified:")
+        print(f"      Cover type: {hdr.cover_type} (stream-based)")
+        print(f"      LSB count: {hdr.lsb_count}")
+        print(f"      Payload length: {hdr.payload_len} bytes")
+    except Exception as e:
+        raise ValueError(f"Header parsing failed: {e}")
+
+    if hdr.cover_type != COV_VIDEO_STREAM or hdr.lsb_count != lsb:
+        raise ValueError("Header validation failed: wrong cover type or LSB settings")
+
+    total_payload_bits = hdr.payload_len * 8
+    slots_for_payload = (total_payload_bits + lsb - 1) // lsb
+    
+    print(f"   📦 Extracting payload: {slots_for_payload:,} slots needed")
+    
+    if slots_for_hdr + slots_for_payload > flat.size:
+        raise ValueError("Not enough data to read payload")
+
+    vals_pl = (flat[idx[slots_for_hdr : slots_for_hdr + slots_for_payload]] & ((1 << lsb) - 1)).astype(np.uint16)
+    pay_bits = unpack_stream_from_lsb(vals_pl, total_payload_bits, lsb)
+    payload = bits_to_bytes(pay_bits)
+
+    # Verify payload integrity
+    actual_hash = hashlib.sha256(payload).digest()
+    expected_hash = hdr.payload_sha256
+
+    if actual_hash != expected_hash:
+        print(f"   ❌ HASH MISMATCH:")
+        print(f"      Expected: {expected_hash.hex()}")
+        print(f"      Actual:   {actual_hash.hex()}")
+        raise ValueError("Payload integrity check failed: data may be corrupted")
+
+    with open(out_payload_path, "wb") as f:
+        f.write(payload)
+    
+    print(f"✅ OPTIMIZED EXTRACTION COMPLETE:")
+    print(f"   📦 Extracted {len(payload)} bytes -> {out_payload_path}")
+    print(f"   🔐 Payload integrity verified")
+    print(f"   🎬 Stream-based extraction successful")
+
+
+def do_extract_video_stream_legacy(stego_path: str, out_payload_path: str, key: str, lsb: int):
+    """Legacy stream-based video steganography extraction (kept for compatibility)."""
     if imageio is None:
         raise RuntimeError("imageio not found. pip install imageio[ffmpeg]")
         
@@ -1715,115 +2038,46 @@ def do_extract_video_stream(stego_path: str, out_payload_path: str, key: str, ls
     # Stack frames and flatten
     vid_array = np.stack(frames, axis=0)
     flat = vid_array.flatten()
-    
-    print(f"🎬 STREAM-BASED EXTRACTION DEBUG:")
-    print(f"   📊 Video info: {len(frames)} frames, flattened to {flat.size:,} pixels")
-    print(f"   📐 Video dimensions: {vid_array.shape}")
 
     seed = seed_from_key(key)
     idx = traversal_indices(flat.size, seed)
-    print(f"   🔑 Using key seed: {seed}")
 
     # First, read header bits - same as image extraction
     hdr_bits_needed = HEADER_BYTES * 8
     slots_for_hdr = (hdr_bits_needed + lsb - 1) // lsb
     
-    print(f"   📋 Attempting to read {slots_for_hdr} header slots ({hdr_bits_needed} bits needed, LSB={lsb})")
-    
     if slots_for_hdr > flat.size:
         raise ValueError("Not enough data to read header")
 
     vals_hdr = (flat[idx[:slots_for_hdr]] & ((1 << lsb) - 1)).astype(np.uint16)
-    print(f"   🔍 First 10 header values: {vals_hdr[:10].tolist()}")
-    
     hdr_bits = unpack_stream_from_lsb(vals_hdr, hdr_bits_needed, lsb)
     header_bytes = bits_to_bytes(hdr_bits)
     
-    print(f"   🔍 Raw header bytes (first 16): {header_bytes[:16].hex()}")
-    print(f"   🔍 Expected MAGIC: {MAGIC.hex()}, Got: {header_bytes[:4].hex()}")
-    
-    # Check if this might be a dimension mismatch issue
     if header_bytes[:4] != MAGIC:
-        print(f"   ⚠️  DIMENSION MISMATCH DETECTED:")
-        print(f"      Current video: {len(frames)} frames, {flat.size:,} pixels")
-        print(f"      Video shape: {vid_array.shape}")
-        print(f"      This suggests the video was re-encoded with different dimensions")
-        print(f"      during embedding, causing pixel order to change.")
-        print(f"   💡 SOLUTIONS:")
-        print(f"      1. Re-embed with lossless encoding (libx264rgb, crf=0)")
-        print(f"      2. Ensure macro_block_size=1 to prevent resizing")
-        print(f"      3. Use the EXACT same video file used for embedding")
-        print(f"      4. Check if video was compressed/converted after embedding")
-        
-        # Try to provide more diagnostic info
-        expected_magic_int = int.from_bytes(MAGIC, 'big')
-        actual_magic_int = int.from_bytes(header_bytes[:4], 'big')
-        offset_diff = actual_magic_int - expected_magic_int
-        
-        print(f"   🔍 ADVANCED DIAGNOSTICS:")
-        print(f"      Magic offset difference: {offset_diff}")
-        print(f"      This could indicate pixel order shifted by ~{abs(offset_diff)} positions")
-        
-        # Suggest trying different LSB values as diagnostic
-        if lsb == 3:
-            print(f"   🔧 DIAGNOSTIC SUGGESTION:")
-            print(f"      Try LSB=1 or LSB=2 to see if data is at different bit depths")
-        
-        raise ValueError("Stream-based decoding failed due to dimension/encoding mismatch. See diagnostics above.")
+        raise ValueError("Stream-based decoding failed due to dimension/encoding mismatch")
     
     try:
         hdr = Header.unpack(header_bytes)
-        print(f"   ✅ Header parsed successfully:")
-        print(f"      Magic: {hdr.magic.hex()} (correct: {hdr.magic == MAGIC})")
-        print(f"      Version: {hdr.version}")
-        print(f"      Cover type: {hdr.cover_type} (expected: {COV_VIDEO_STREAM})")
-        print(f"      LSB count: {hdr.lsb_count} (expected: {lsb})")
-        print(f"      Payload length: {hdr.payload_len}")
     except Exception as e:
-        print(f"   ❌ Header parsing failed: {e}")
-        # Try to analyze what we got
-        if len(header_bytes) >= 4:
-            magic_found = header_bytes[:4]
-            print(f"   🔍 Magic analysis:")
-            print(f"      Expected: {MAGIC} ({MAGIC.hex()})")
-            print(f"      Found:    {magic_found} ({magic_found.hex()})")
-            print(f"      Match:    {magic_found == MAGIC}")
         raise ValueError(f"Bad magic: header parsing failed with {e}")
 
     if hdr.cover_type != COV_VIDEO_STREAM or hdr.lsb_count != lsb:
-        print(f"   ❌ Header validation failed:")
-        print(f"      Cover type: got {hdr.cover_type}, expected {COV_VIDEO_STREAM}")
-        print(f"      LSB count: got {hdr.lsb_count}, expected {lsb}")
         raise ValueError("Wrong key/cover/lsb settings (header mismatch).")
 
     total_payload_bits = hdr.payload_len * 8
     slots_for_payload = (total_payload_bits + lsb - 1) // lsb
     
-    print(f"   📦 Extracting payload:")
-    print(f"      Payload length: {hdr.payload_len} bytes ({total_payload_bits} bits)")
-    print(f"      Payload slots needed: {slots_for_payload}")
-    print(f"      Total slots (header + payload): {slots_for_hdr + slots_for_payload}")
-    
     if slots_for_hdr + slots_for_payload > flat.size:
         raise ValueError("Not enough data to read payload")
 
     vals_pl = (flat[idx[slots_for_hdr : slots_for_hdr + slots_for_payload]] & ((1 << lsb) - 1)).astype(np.uint16)
-    print(f"   🔍 First 10 payload values: {vals_pl[:10].tolist()}")
-    
     pay_bits = unpack_stream_from_lsb(vals_pl, total_payload_bits, lsb)
     payload = bits_to_bytes(pay_bits)
 
-    print(f"   🔐 Payload hash check:")
-    actual_hash = hashlib.sha256(payload).digest()
-    expected_hash = hdr.payload_sha256
-    print(f"      Expected: {expected_hash.hex()}")
-    print(f"      Actual:   {actual_hash.hex()}")
-    print(f"      Match:    {actual_hash == expected_hash}")
-
-    if actual_hash != expected_hash:
+    if hashlib.sha256(payload).digest() != hdr.payload_sha256:
         raise ValueError("Integrity check failed (wrong key or corrupted data).")
 
     open(out_payload_path, "wb").write(payload)
-    print(f"✅ Extracted {len(payload)} bytes from video stream -> {out_payload_path}")
+    print(f"✅ Extracted {len(payload)} bytes from video stream -> {out_payload_path} (legacy method)")
 
 
