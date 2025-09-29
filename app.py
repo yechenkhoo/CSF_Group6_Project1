@@ -418,7 +418,18 @@ def encode_ui():
         cover_up = st.file_uploader(
             "Cover file (.png/.bmp/.mp4/.mov/.mkv or .wav)", type=["png", "bmp", "wav", "mp4", "mov", "mkv"], key="cover"
         )
-        payload_up = st.file_uploader("Payload file (any)", type=None, key="payload")
+        # payload_up = st.file_uploader("Payload file (any)", type=None, key="payload")
+
+        payload_mode = st.radio("Payload type", ["Text", "File"], horizontal=True)
+
+        if payload_mode == "Text":
+            payload_text = st.text_area("Enter text to hide", height=150, key="payload_text")
+            payload_up = None
+        else:
+            payload_text = None
+            payload_up = st.file_uploader("Payload file (any)", type=None, key="payload")
+
+
         out_name = st.text_input("Output stego filename", value="stego")
         ext_choice = st.selectbox("Output type", [".png", ".bmp", ".wav", ".mp4"], index=0)
         go = st.button("Embed", type="primary")
@@ -592,16 +603,31 @@ def encode_ui():
     if go:
         if not key:
             st.error("Key is required")
-        elif cover_up is None or payload_up is None:
-            st.error("Please provide both cover and payload files")
+        elif cover_up is None:
+            st.error("Please provide a cover file")
+        elif payload_mode == "File" and payload_up is None:
+            st.error("Please provide a payload file")
+        elif payload_mode == "Text" and not payload_text.strip():
+            st.error("Please enter some text to hide")
         else:
             try:
                 # Persist uploads to tmp paths
                 cov_ext = os.path.splitext(cover_up.name)[1].lower()
                 cover_path = _save_to_tmp(cover_up, suffix=cov_ext)
-                payload_path = _save_to_tmp(
-                    payload_up, suffix=os.path.splitext(payload_up.name)[1] or ".txt"
-                )
+                
+                # payload_path = _save_to_tmp(
+                #     payload_up, suffix=os.path.splitext(payload_up.name)[1] or ".txt"
+                # )
+
+                if payload_mode == "Text":
+                    payload_fd, payload_path = tempfile.mkstemp(suffix=".txt")
+                    with os.fdopen(payload_fd, "w", encoding="utf-8") as f:
+                        f.write(payload_text or "")
+                else:
+                    payload_path = _save_to_tmp(
+                        payload_up, suffix=os.path.splitext(payload_up.name)[1] or ".txt"
+                    )
+
                 out_path = os.path.join(
                     tempfile.gettempdir(), (out_name or "stego") + ext_choice
                 )
@@ -727,7 +753,7 @@ def encode_ui():
                         size_change = stego_size - original_size
                         size_change_pct = (size_change / original_size * 100) if original_size > 0 else 0
                         
-                        st.success("✅ Embedded into video stego (IFRAME-ONLY)")
+                        st.success("Embedded into video stego (IFRAME-ONLY)")
                         
                         # Show file size comparison
                         col1, col2, col3 = st.columns(3)
@@ -740,11 +766,11 @@ def encode_ui():
                         
                         if size_change_pct != 0:
                             if abs(size_change_pct) < 0.01:
-                                st.success(f"🎬 IFRAME Size change: {size_change:+,} bytes (<0.01%)")
+                                st.success(f"IFRAME Size change: {size_change:+,} bytes (<0.01%)")
                             else:
-                                st.success(f"🎬 IFRAME Size change: {size_change:+,} bytes ({size_change_pct:+.2f}%)")
+                                st.success(f"IFRAME Size change: {size_change:+,} bytes ({size_change_pct:+.2f}%)")
                         else:
-                            st.success("🎬 IFRAME No size change detected")
+                            st.success("IFRAME No size change detected")
                                                 
                         # Load stego frames for comparison
                         try:
@@ -765,7 +791,7 @@ def encode_ui():
                                             if i not in iframe_candidates][:len(iframe_candidates)//2]
                             selected_frames = sorted(iframe_candidates + scatter_frames)
                             
-                            st.info(f"🔑 I-frame pattern: GOP size {gop_size}, specialized keyframe embedding")
+                            st.info(f"I-frame pattern: GOP size {gop_size}, specialized keyframe embedding")
                             
                             # Show sample I-frames comparison
                             st.subheader("I-Frame Comparison (IFRAME-ONLY Method)")
@@ -837,7 +863,7 @@ def encode_ui():
                                     st.caption(f"... and {len(selected_frames) - rows * cols_per_row} more I-frames with specialized patterns")
                             
                         else:
-                            st.info("🎬 IFRAME-ONLY video embedded successfully, but frame comparison visualization is not available.")
+                            st.info("IFRAME-ONLY video embedded successfully, but frame comparison visualization is not available.")
                     
                     else:
                         # New stream-based embedding
@@ -854,7 +880,7 @@ def encode_ui():
                             do_embed_video_stream(cover_path, payload_path, out_path, key, lsb)
                         except RuntimeError as e:
                             if "FFmpeg not found" in str(e):
-                                st.warning("⚠️ FFmpeg not found. Falling back to frame-based embedding...")
+                                st.warning("FFmpeg not found. Falling back to frame-based embedding...")
                                 st.info("To use stream-based embedding, please install FFmpeg:\n" +
                                        "- macOS: `brew install ffmpeg`\n" + 
                                        "- Windows: `choco install ffmpeg`\n" +
@@ -889,11 +915,11 @@ def encode_ui():
                         
                         if size_change_pct != 0:
                             if abs(size_change_pct) < 0.01:
-                                st.success(f"📊 Size change: {size_change:+,} bytes (<0.01%)")
+                                st.success(f"Size change: {size_change:+,} bytes (<0.01%)")
                             else:
-                                st.success(f"📊 Size change: {size_change:+,} bytes ({size_change_pct:+.2f}%)")
+                                st.success(f"Size change: {size_change:+,} bytes ({size_change_pct:+.2f}%)")
                         else:
-                            st.success("📊 No size change detected")
+                            st.success("No size change detected")
                         
                         st.write("Stream-based embedding modifies the raw stream data directly, making it more robust against certain types of analysis.")
                         
