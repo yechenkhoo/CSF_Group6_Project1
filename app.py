@@ -23,6 +23,8 @@ from main import (
     _load_video_stream_data,
     do_embed_video,
     do_extract_video,
+    do_embed_video_iframe,
+    do_extract_video_iframe,
     _iter_video_frames,
 )
 
@@ -701,10 +703,10 @@ def encode_ui():
 
                 elif cov_ext in SUPPORTED_VIDEO_EXTS and ext_choice == ".mp4":
                     # Check which video method was selected
-                    selected_method = st.session_state.get("video_method", "Frame-based (existing)")
+                    selected_method = st.session_state.get("video_method", "Frame-based")
                     
-                    if selected_method == "Frame-based (existing)":
-                        # Original frame-based embedding
+                    if selected_method == "Frame-based":
+                        # NEW IFRAME-ONLY embedding - completely separate from stream-based
 
                         frame_step_val = int(st.session_state.get("vid_step_preview", 10))
                         
@@ -715,7 +717,8 @@ def encode_ui():
                             st.error(f"Failed to load original video frames: {e}")
                             st.stop()
                         
-                        do_embed_video(cover_path, payload_path, out_path, key, lsb, frame_step_val)
+                        # Call the NEW iframe-only function
+                        do_embed_video_iframe(cover_path, payload_path, out_path, key, lsb, frame_step_val)
                         
                         # Get file sizes for display
                         original_size = os.path.getsize(cover_path)
@@ -724,7 +727,7 @@ def encode_ui():
                         size_change = stego_size - original_size
                         size_change_pct = (size_change / original_size * 100) if original_size > 0 else 0
                         
-                        st.success("Embedded into video stego (frame-based)")
+                        st.success("✅ Embedded into video stego (IFRAME-ONLY)")
                         
                         # Show file size comparison
                         col1, col2, col3 = st.columns(3)
@@ -737,11 +740,13 @@ def encode_ui():
                         
                         if size_change_pct != 0:
                             if abs(size_change_pct) < 0.01:
-                                st.success(f"Size change: {size_change:+,} bytes (<0.01%)")
+                                st.success(f"🎬 IFRAME Size change: {size_change:+,} bytes (<0.01%)")
                             else:
-                                st.success(f"Size change: {size_change:+,} bytes ({size_change_pct:+.2f}%)")
+                                st.success(f"🎬 IFRAME Size change: {size_change:+,} bytes ({size_change_pct:+.2f}%)")
                         else:
-                            st.success("No size change detected")
+                            st.success("🎬 IFRAME No size change detected")
+                        
+                        st.info("🔑 IFRAME-ONLY encoding uses I-frame specific patterns: DCT blocks, frequency domain, keyframe optimization")
                         
                         # Load stego frames for comparison
                         try:
@@ -754,42 +759,55 @@ def encode_ui():
                         if stego_frames is not None:
                             st.subheader("Video Steganography Analysis")
                             
-                            # Calculate which frames were modified
-                            selected_frames = list(range(0, len(original_frames), max(1, frame_step_val)))
-                            st.info(f"Modified {len(selected_frames)} out of {len(original_frames)} frames (every {frame_step_val} frames)")
+                            # Calculate which I-frames were modified
+                            total_frames = len(original_frames)
+                            gop_size = max(frame_step_val, 10)
+                            iframe_candidates = list(range(0, total_frames, gop_size))
+                            scatter_frames = [i for i in range(1, total_frames, max(1, total_frames // 20)) 
+                                            if i not in iframe_candidates][:len(iframe_candidates)//2]
+                            selected_frames = sorted(iframe_candidates + scatter_frames)
                             
-                            # Show sample frames comparison
-                            st.subheader("Frame Comparison")
+                            st.info(f"🎞️ Modified {len(selected_frames)} I-frame candidates out of {len(original_frames)} total frames")
+                            st.info(f"🔑 I-frame pattern: GOP size {gop_size}, specialized keyframe embedding")
+                            
+                            # Show sample I-frames comparison
+                            st.subheader("I-Frame Comparison (IFRAME-ONLY Method)")
                             num_samples = min(3, len(selected_frames))
                             sample_indices = selected_frames[:num_samples] if len(selected_frames) >= num_samples else selected_frames
                             
                             for i, frame_idx in enumerate(sample_indices):
-                                st.write(f"**Frame {frame_idx}:**")
+                                iframe_type = i % 3
+                                iframe_names = ["DCT Block", "Frequency Domain", "Keyframe Optimization"]
+                                st.write(f"**I-Frame {frame_idx} ({iframe_names[iframe_type]} Pattern):**")
                                 col1, col2, col3 = st.columns(3)
                                 
                                 with col1:
-                                    st.image(original_frames[frame_idx], caption=f"Original Frame {frame_idx}", use_container_width=True)
+                                    st.image(original_frames[frame_idx], caption=f"Original I-Frame {frame_idx}", use_container_width=True)
                                 
                                 with col2:
-                                    st.image(stego_frames[frame_idx], caption=f"Stego Frame {frame_idx}", use_container_width=True)
+                                    st.image(stego_frames[frame_idx], caption=f"Stego I-Frame {frame_idx}", use_container_width=True)
                                 
                                 with col3:
-                                    # Calculate LSB difference
+                                    # Calculate I-frame specific LSB difference
                                     orig_frame = original_frames[frame_idx]
                                     stego_frame = stego_frames[frame_idx]
                                     
-                                    # Compute difference in LSBs
-                                    diff = (stego_frame ^ orig_frame) & ((1 << lsb) - 1)
+                                    # Compute difference in LSBs (with enhanced LSB for some patterns)
+                                    if iframe_type in [0, 2]:  # DCT and keyframe use enhanced LSB
+                                        enhanced_lsb = min(lsb + 1, 6)
+                                        diff = (stego_frame ^ orig_frame) & ((1 << enhanced_lsb) - 1)
+                                        scale = 255 // ((1 << enhanced_lsb) - 1) if enhanced_lsb < 8 else 1
+                                    else:
+                                        diff = (stego_frame ^ orig_frame) & ((1 << lsb) - 1)
+                                        scale = 255 // ((1 << lsb) - 1) if lsb < 8 else 1
                                     
-                                    # Amplify to make visible
-                                    scale = 255 // ((1 << lsb) - 1) if lsb < 8 else 1
                                     diff_vis = (diff * scale).astype(np.uint8)
                                     
-                                    st.image(diff_vis, caption=f"LSB Differences (x{scale})", use_container_width=True)
+                                    st.image(diff_vis, caption=f"I-Frame LSB Diff (x{scale})", use_container_width=True)
                             
-                            # Show modified frames grid
+                            # Show modified I-frames grid
                             if len(selected_frames) > 3:
-                                st.subheader("All Modified Frames (Thumbnails)")
+                                st.subheader("All Modified I-Frames (Thumbnails)")
                                 cols_per_row = 6
                                 rows = (len(selected_frames) + cols_per_row - 1) // cols_per_row
                                 
@@ -799,21 +817,32 @@ def encode_ui():
                                         frame_idx_in_list = row * cols_per_row + col_idx
                                         if frame_idx_in_list < len(selected_frames):
                                             frame_num = selected_frames[frame_idx_in_list]
+                                            iframe_type = frame_idx_in_list % 3
                                             with cols[col_idx]:
-                                                # Show difference thumbnail
+                                                # Show I-frame specific difference thumbnail
                                                 orig_frame = original_frames[frame_num]
                                                 stego_frame = stego_frames[frame_num]
-                                                diff = (stego_frame ^ orig_frame) & ((1 << lsb) - 1)
-                                                scale = 255 // ((1 << lsb) - 1) if lsb < 8 else 1
+                                                
+                                                # Use appropriate LSB for I-frame pattern
+                                                if iframe_type in [0, 2]:
+                                                    enhanced_lsb = min(lsb + 1, 6)
+                                                    diff = (stego_frame ^ orig_frame) & ((1 << enhanced_lsb) - 1)
+                                                    scale = 255 // ((1 << enhanced_lsb) - 1) if enhanced_lsb < 8 else 1
+                                                else:
+                                                    diff = (stego_frame ^ orig_frame) & ((1 << lsb) - 1)
+                                                    scale = 255 // ((1 << lsb) - 1) if lsb < 8 else 1
+                                                
                                                 diff_vis = (diff * scale).astype(np.uint8)
-                                                st.image(diff_vis, caption=f"F{frame_num}", use_container_width=True)
+                                                pattern_emoji = ["🟦", "🟨", "🟩"][iframe_type]
+                                                st.image(diff_vis, caption=f"{pattern_emoji}I{frame_num}", use_container_width=True)
                                 
                                 if len(selected_frames) > rows * cols_per_row:
-                                    st.caption(f"... and {len(selected_frames) - rows * cols_per_row} more modified frames")
+                                    st.caption(f"... and {len(selected_frames) - rows * cols_per_row} more I-frames with specialized patterns")
                             
-                            st.info("Note: Stego video uses lossless codec. Preview may not work in all browsers. Download for local playback.")
+                            st.info("🎬 Note: IFRAME-ONLY stego video uses I-frame specialized patterns. Preview may not work in all browsers. Download for local playback.")
+                            st.success("🔑 IFRAME embedding is completely separate from stream-based methods!")
                         else:
-                            st.info("Video embedded successfully, but frame comparison visualization is not available.")
+                            st.info("🎬 IFRAME-ONLY video embedded successfully, but frame comparison visualization is not available.")
                     
                     else:
                         # New stream-based embedding
@@ -827,8 +856,7 @@ def encode_ui():
                             embed_stream_index = int(st.session_state.get("audio_stream_idx_encode", 0))
                         
                         try:
-                            do_embed_video_stream(cover_path, payload_path, out_path, key, lsb, 
-                                                embed_stream_type, embed_stream_index)
+                            do_embed_video_stream(cover_path, payload_path, out_path, key, lsb)
                         except RuntimeError as e:
                             if "FFmpeg not found" in str(e):
                                 st.warning("⚠️ FFmpeg not found. Falling back to frame-based embedding...")
@@ -901,20 +929,9 @@ def encode_ui():
                             except Exception as e:
                                 st.warning(f"Could not generate stream analysis: {e}")
                         
-                        # Frame comparison for video streams
-                        if embed_stream_type == "video":
-                            with st.expander("Frame-by-Frame Comparison", expanded=False):
-                                try:
-                                    comparison_fig = show_video_frame_comparison(cover_path, out_path, lsb=lsb)
-                                    if comparison_fig:
-                                        st.pyplot(comparison_fig)
-                                        plt.close(comparison_fig)
-                                        st.caption("Red/bright areas in difference images show where data was embedded")
-                                except Exception as e:
-                                    st.warning(f"Could not generate frame comparison: {e}")
-                        
+                     
                         # Audio waveform comparison for audio streams
-                        elif embed_stream_type == "audio":
+                        if embed_stream_type == "audio":
                             with st.expander("Audio Waveform Analysis", expanded=False):
                                 try:
                                     # Show original audio preview
@@ -1111,21 +1128,21 @@ def decode_ui():
                         st.success("Extracted payload from audio")
                 elif stego_ext in SUPPORTED_VIDEO_EXTS:
                     # Check which video method was selected for decoding
-                    selected_decode_method = st.session_state.get("video_decode_method", "Frame-based (existing)")
+                    selected_decode_method = st.session_state.get("video_decode_method", "Frame-based")
                     
                     with st.spinner("Decoding video payload..."):
-                        if selected_decode_method == "Frame-based (existing)":
-                            # Original frame-based extraction
-                            from main import do_extract_video
+                        if selected_decode_method == "Frame-based":
+                            # NEW IFRAME-ONLY extraction - completely separate from stream-based
                             step_val = int(st.session_state.get("vid_step_preview_decode", 10))
                             
                             try:
-                                do_extract_video(stego_path, out_path, key, lsb, step_val)
-                                st.success("Extracted payload from video (frame-based)")
+                                # Call the NEW iframe-only extraction function
+                                do_extract_video_iframe(stego_path, out_path, key, lsb, step_val)
+                                st.success("✅ Extracted payload from video (IFRAME-ONLY)")
                             except Exception as e:
-                                if "Bad magic" in str(e) or "Bad magic" in getattr(e, "args", [""])[0]:
+                                if "Bad magic" in str(e) or "Bad magic" in getattr(e, "args", [""])[0] or "iframe-only" in str(e).lower():
                                     step_candidates = [step_val] + [1, 2, 3, 5, 10, 15, 20, 24, 25, 30]
-                                    lsb_candidates = [lsb] + [i for i in range(1, 9) if i != lsb]
+                                    lsb_candidates = [lsb] + [i for i in range(1, 7) if i != lsb]  # Max 6 for iframe
                                     tried = set()
                                     found = None
                                     for lsb_try in lsb_candidates:
@@ -1135,11 +1152,13 @@ def decode_ui():
                                                 continue
                                             tried.add(key_t)
                                             try:
-                                                do_extract_video(stego_path, out_path, key, int(lsb_try), int(step_try))
+                                                # Try IFRAME-ONLY extraction with different parameters
+                                                do_extract_video_iframe(stego_path, out_path, key, int(lsb_try), int(step_try))
                                                 found = (lsb_try, step_try)
                                                 break
                                             except Exception as e2:
-                                                if "Bad magic" in str(e2) or "Bad magic" in getattr(e2, "args", [""])[0]:
+                                                if ("Bad magic" in str(e2) or "Bad magic" in getattr(e2, "args", [""])[0] or 
+                                                    "iframe-only" in str(e2).lower()):
                                                     continue
                                                 else:
                                                     # some other error; surface it
@@ -1147,10 +1166,10 @@ def decode_ui():
                                         if found:
                                             break
                                     if found:
-                                        st.info(f"Auto-detected settings: LSB={found[0]}, frame step={found[1]}")
-                                        st.success("Extracted payload from video (frame-based)")
+                                        st.info(f"🔍 Auto-detected IFRAME settings: LSB={found[0]}, frame step={found[1]}")
+                                        st.success("✅ Extracted payload from video (IFRAME-ONLY)")
                                     else:
-                                        st.error("Failed to extract from video. Possible causes: wrong key/LSB, wrong frame step, or the video was transcoded (lossy). Try re-embedding and extracting immediately with the same settings.")
+                                        st.error("❌ Failed to extract from IFRAME-ONLY video. Possible causes: wrong key/LSB, wrong frame step, or this video uses stream-based encoding instead of iframe-only. Try stream-based decoding or check encoding method.")
                                         st.stop()
                                 else:
                                     raise
@@ -1167,9 +1186,8 @@ def decode_ui():
                                 decode_stream_index = int(st.session_state.get("audio_stream_idx_decode", 0))
                             
                             try:
-                                do_extract_video_stream(stego_path, out_path, key, lsb, 
-                                                      decode_stream_type, decode_stream_index)
-                                st.success(f"Extracted payload from video ({decode_stream_type} stream {decode_stream_index})")
+                                do_extract_video_stream(stego_path, out_path, key, lsb)
+                                st.success(f"Extracted payload from video stream")
                             except Exception as e:
                                 st.error(f"Failed to extract from {decode_stream_type} stream {decode_stream_index}: {e}")
                                 st.info("Ensure the stream type, index, and LSB settings match those used during encoding.")
