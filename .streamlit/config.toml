@@ -1,0 +1,13 @@
+[server]
+# Maximum size, in megabytes, for files uploaded to the app.
+# Default: 200
+maxUploadSize = 1000
+
+# Maximum size, in megabytes, of messages that can be sent via the WebSocket connection.
+# Default: 200
+maxMessageSize = 1000
+
+[client]
+# Controls whether uncaught app exceptions are displayed in the browser.
+# By default, this is set to True and Streamlit displays app exceptions and associated tracebacks in the browser.
+showErrorDetails = true
